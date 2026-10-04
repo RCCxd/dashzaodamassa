@@ -1,0 +1,16 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "buildCommand": "pnpm build:vercel",
+  "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/login", "destination": "/index.html" },
+    { "source": "/activities", "destination": "/index.html" },
+    { "source": "/subjects", "destination": "/index.html" },
+    { "source": "/focus", "destination": "/index.html" },
+    { "source": "/achievements", "destination": "/index.html" },
+    { "source": "/planner", "destination": "/index.html" },
+    { "source": "/settings", "destination": "/index.html" },
+    { "source": "/404", "destination": "/index.html" }
+  ]
+}

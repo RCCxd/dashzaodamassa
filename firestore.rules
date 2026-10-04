@@ -1,0 +1,145 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Substitua o marcador pelo UID da conta administrativa criada no Console Firebase.
+    // Se esquecer, nenhum usuário terá permissão administrativa.
+    function isAdmin() {
+      return signedIn() && request.auth.uid == "REPLACE_WITH_ADMIN_UID";
+    }
+
+    function owns(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isOptionalString(value, maxLength) {
+      return value == null || (value is string && value.size() <= maxLength);
+    }
+
+    function validProfile(uid) {
+      return request.resource.data.keys().hasOnly(["uid", "name", "email", "role", "createdAt", "updatedAt"])
+        && request.resource.data.keys().hasAll(["uid", "name", "email", "role"])
+        && request.resource.data.uid == uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 120
+        && request.resource.data.role == (isAdmin() ? "admin" : "student");
+    }
+
+    function validSubject() {
+      return request.resource.data.keys().hasOnly(["name", "color", "teacher", "schedule", "description", "createdAt", "updatedAt"])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 1
+        && request.resource.data.name.size() <= 120
+        && request.resource.data.color is string
+        && request.resource.data.color.size() <= 16
+        && isOptionalString(request.resource.data.teacher, 120)
+        && isOptionalString(request.resource.data.schedule, 160)
+        && isOptionalString(request.resource.data.description, 2000);
+    }
+
+    function validActivity() {
+      return request.resource.data.keys().hasOnly(["subjectId", "title", "description", "type", "priority", "status", "dueDate", "resourceUrl", "estimatedMinutes", "createdAt", "updatedAt"])
+        && request.resource.data.subjectId is string
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 1
+        && request.resource.data.title.size() <= 180
+        && isOptionalString(request.resource.data.description, 5000)
+        && request.resource.data.type in ["tarefa", "prova", "trabalho", "projeto"]
+        && request.resource.data.priority in ["baixa", "media", "alta"]
+        && request.resource.data.status in ["pendente", "em_andamento", "concluida"]
+        && (request.resource.data.dueDate == null || request.resource.data.dueDate is timestamp)
+        && isOptionalString(request.resource.data.resourceUrl, 2048)
+        && request.resource.data.estimatedMinutes is int
+        && request.resource.data.estimatedMinutes >= 1
+        && request.resource.data.estimatedMinutes <= 1440;
+    }
+
+    match /users/{uid} {
+      allow read: if owns(uid);
+      allow create: if owns(uid) && validProfile(uid);
+      allow update: if (isAdmin() && validProfile(uid))
+        || (owns(uid)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["name", "updatedAt"])
+          && request.resource.data.name is string
+          && request.resource.data.name.size() <= 120
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.email == resource.data.email);
+      allow delete: if false;
+
+      match /activityCompletions/{activityId} {
+        allow read: if owns(uid);
+        allow create: if owns(uid)
+          && request.resource.data.keys().hasOnly(["activityId", "completedAt"])
+          && request.resource.data.activityId == activityId
+          && request.resource.data.completedAt == request.time;
+        allow update: if false;
+        allow delete: if owns(uid);
+      }
+
+      match /studySessions/{sessionId} {
+        allow read: if owns(uid);
+        allow create: if owns(uid)
+          && request.resource.data.keys().hasOnly(["durationMinutes", "subjectId", "activityId", "kind", "startedAt", "completedAt"])
+          && request.resource.data.durationMinutes is int
+          && request.resource.data.durationMinutes >= 1
+          && request.resource.data.durationMinutes <= 600
+          && (request.resource.data.subjectId == null || request.resource.data.subjectId is string)
+          && (request.resource.data.activityId == null || request.resource.data.activityId is string)
+          && request.resource.data.kind in ["pomodoro", "livre"]
+          && request.resource.data.startedAt is timestamp
+          && request.resource.data.completedAt == request.time;
+        allow update, delete: if false;
+      }
+
+      match /planner/{noteId} {
+        allow read: if owns(uid);
+        allow create, update: if owns(uid)
+          && noteId == "quickNote"
+          && request.resource.data.keys().hasOnly(["content", "updatedAt"])
+          && request.resource.data.content is string
+          && request.resource.data.content.size() <= 5000
+          && request.resource.data.updatedAt == request.time;
+        allow delete: if owns(uid);
+      }
+
+      match /weeklyGoals/{weekStart} {
+        allow read: if owns(uid);
+        allow create, update: if owns(uid)
+          && request.resource.data.keys().hasOnly(["weekStart", "targetMinutes", "targetSessions", "updatedAt"])
+          && request.resource.data.weekStart == weekStart
+          && weekStart.matches("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+          && request.resource.data.targetMinutes is int
+          && request.resource.data.targetMinutes >= 15
+          && request.resource.data.targetMinutes <= 2400
+          && request.resource.data.targetSessions is int
+          && request.resource.data.targetSessions >= 1
+          && request.resource.data.targetSessions <= 50
+          && request.resource.data.updatedAt == request.time;
+        allow delete: if owns(uid);
+      }
+    }
+
+    match /subjects/{subjectId} {
+      allow read: if signedIn();
+      allow create, update: if isAdmin() && validSubject();
+      allow delete: if isAdmin();
+    }
+
+    match /activities/{activityId} {
+      allow read: if signedIn();
+      allow create, update: if isAdmin() && validActivity();
+      allow delete: if isAdmin();
+    }
+
+    // The client does not trust achievement writes; achievements are derived from a user's own records.
+    // This collection is reserved for an optional later server-side implementation.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
