@@ -9,7 +9,7 @@ service cloud.firestore {
     // Substitua o marcador pelo UID da conta administrativa criada no Console Firebase.
     // Se esquecer, nenhum usuário terá permissão administrativa.
     function isAdmin() {
-      return signedIn() && request.auth.uid == "REPLACE_WITH_ADMIN_UID";
+      return signedIn() && request.auth.uid == "OnUYUaC8B8Nnpkh679DWAspK7392";
     }
 
     function owns(uid) {
