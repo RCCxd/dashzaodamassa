@@ -10,7 +10,7 @@
 - [x] Deploy com SPA estática em `dist/` e uma Function restrita `/api/blob` para anexos privados; sem backend genérico ou API de cadastro.
 - [x] Tela de configuração explícita se faltarem credenciais Firebase.
 - [x] Importador MySQL→Firestore em dry-run por padrão; origem somente-leitura e nenhum hash/sessão antiga é migrado.
-- [x] `pnpm check`, `pnpm check:vercel`, Vitest, `pnpm test:rules` no Emulator e `pnpm build:vercel` passaram localmente.
+- [x] `pnpm check`, `pnpm check:vercel`, `pnpm check:api`, Vitest, `pnpm test:rules` no Emulator e `pnpm build:vercel` passaram localmente.
 
 ## Preparação externa necessária
 
@@ -18,8 +18,7 @@ As ações externas ainda pendentes aparecem uma única vez na seção **Prepara
 
 ## Evoluções ainda fora desta fase
 
-- [ ] Verificação de e-mail, convite privado por turma, notificações externas e realtime multissessão.
-
+- [ ] Verificação de e-mail, convite privado por turma, notificações externas e realtime fora do placar ranqueado.
 
 ## Fase 2 — critérios de aceite
 
@@ -45,3 +44,14 @@ As ações externas ainda pendentes aparecem uma única vez na seção **Prepara
 - [ ] Enviar esta versão em branch Preview pelo GitHub e validar assets, Auth e regras; só então promover à branch `main`.
 - [ ] Criar contas Firebase para os e-mails que já têm dados na origem; executar dry-run e revisar contagens do importador antes de `--apply`.
 - [ ] Preservar a origem Manus/MySQL como backup; confirmar e comunicar que usuários legados precisam redefinir a senha.
+
+## Atualização da ranqueada — solicitação de 2026-10-05
+
+- [x] **Progressão e fontes de RP:** tornar a subida de divisão mais fácil (50 RP por divisão; Radiante a partir de 1.200 RP); conceder pontos por prioridade de atividade (baixa 10, média 12, alta 15) e bônus por tipo (tarefa +0, prova +5, trabalho +3, projeto +4); o Modo Foco, Pomodoro e sessões livres continuam valendo 0 RP.
+- [x] **Perda e correção do saldo:** ao desmarcar uma atividade, remover do saldo os RP exatos registrados no ledger da conclusão; armazenar a conclusão/ledger como ativa ou revertida; ao marcar de novo, reativar a pontuação sem duplicar; corrigir, uma única vez, RP de atividades desmarcadas em versões antigas mas ainda contabilizadas e reativar ledger inativo quando a conclusão histórica continua existindo.
+- [x] **Placar automático:** atualizar a tabela global imediatamente em sessões conectadas via listener Firestore em tempo real, sem polling oneroso; manter consentimento por apelido, isolamento de dados privados e mesma pontuação no placar e no saldo do aluno.
+
+## Integridade de catálogo e histórico — solicitação de 2026-10-05
+
+- [x] **Arquivamento preserva dados:** substituir a exclusão física de matérias e atividades compartilhadas por arquivamento lógico; matérias/atividades arquivadas saem da grade/listas novas, mas conclusões/ledgers de cada aluno e PDFs permanecem guardados. Tarefas concluídas arquivadas seguem visíveis somente para o aluno que as concluiu até que ele as reabra; ao reabrir, os pontos são retirados e o item deixa as listas comuns.
+- [x] **Regras protegem transições:** só o UID admin pode arquivar; regras negam excluir fisicamente matérias/atividades; aluno ainda pode reverter os RP de uma conclusão já existente em item arquivado, mas não pode concluir/reconcluir atividade arquivada nem atividade sob matéria arquivada para ganhar pontos, mesmo por uma aba antiga.

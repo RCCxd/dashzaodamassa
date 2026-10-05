@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { firebaseApi } from "@/lib/firebase-api";
 import type { Subject, SubjectSlotInput } from "@/lib/firestore-data";
-import { BookOpen, CalendarDays, Clock3, Pencil, Plus, Trash2, UserRound } from "lucide-react";
+import { Archive, BookOpen, CalendarDays, Clock3, Pencil, Plus, Trash2, UserRound } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 
@@ -25,9 +25,9 @@ export default function SubjectsPage() {
   const isAdmin = me.data?.role === "admin";
   const create = firebaseApi.subjects.create.useMutation({ onSuccess: () => { void utils.subjects.list.invalidate(); toast.success("Matéria adicionada à grade."); setOpen(false); } });
   const update = firebaseApi.subjects.update.useMutation({ onSuccess: () => { void utils.subjects.list.invalidate(); toast.success("Matéria e horários atualizados."); setOpen(false); } });
-  const remove = firebaseApi.subjects.remove.useMutation({ onSuccess: () => { void utils.subjects.list.invalidate(); void utils.activities.list.invalidate(); toast.success("Matéria excluída."); } });
+  const archive = firebaseApi.subjects.archive.useMutation({ onSuccess: () => { void utils.subjects.list.invalidate(); void utils.activities.list.invalidate(); void utils.dashboard.summary.invalidate(); toast.success("Matéria arquivada; o histórico de tarefas e RP foi preservado."); }, onError: error => toast.error(error.message) });
 
-  const subjects = list.data ?? [];
+  const subjects = (list.data ?? []).filter(subject => !subject.archived);
   const rows = useMemo(() => [...new Set(subjects.flatMap(subject => subject.weeklySlots.map(slot => slot.startTime)))].sort(), [subjects]);
   const slotCount = subjects.reduce((total, subject) => total + subject.weeklySlots.length, 0);
   const startCreate = () => { setEditing(null); setForm(blank()); setOpen(true); };
@@ -69,7 +69,7 @@ export default function SubjectsPage() {
       {subjects.length ? <div className="divide-y divide-border border-y border-border">{subjects.map(subject => <article key={subject.id} className="flex flex-wrap items-start gap-4 py-4">
         <span className="mt-1 size-3 shrink-0 rounded-sm" style={{ background: subject.color }} aria-hidden="true" />
         <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-x-3 gap-y-1"><h3 className="font-semibold">{subject.name}</h3>{subject.teacher && <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"><UserRound className="size-3" />{subject.teacher}</span>}</div>{subject.description && <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">{subject.description}</p>}{subject.schedule && <p className="mt-1 text-xs text-muted-foreground">Observação de horário: {subject.schedule}</p>}</div>
-        {isAdmin && <div className="flex gap-1"><button type="button" onClick={() => startEdit(subject)} className="editorial-icon-button size-8 p-0" aria-label={`Editar ${subject.name}`}><Pencil className="size-4" /></button><button type="button" onClick={() => setRemoving(subject.id)} className="editorial-icon-button size-8 p-0 hover:border-rose-400 hover:bg-rose-400/10 hover:text-rose-300" aria-label={`Excluir ${subject.name}`}><Trash2 className="size-4" /></button></div>}
+        {isAdmin && <div className="flex gap-1"><button type="button" onClick={() => startEdit(subject)} className="editorial-icon-button size-8 p-0" aria-label={`Editar ${subject.name}`}><Pencil className="size-4" /></button><button type="button" onClick={() => setRemoving(subject.id)} className="editorial-icon-button size-8 p-0" aria-label={`Arquivar ${subject.name}`} title="Arquivar matéria"><Archive className="size-4" /></button></div>}
       </article>)}</div> : <p className="py-8 text-center text-sm text-muted-foreground">{isAdmin ? "Crie uma matéria para começar a organizar a turma." : "As matérias criadas pelo administrador aparecerão aqui."}</p>}
     </section>
 
@@ -94,6 +94,6 @@ export default function SubjectsPage() {
         </form>
       </DialogContent>
     </Dialog>
-    <Dialog open={removing !== null} onOpenChange={next => !next && setRemoving(null)}><DialogContent><DialogHeader><DialogTitle className="font-editorial text-2xl">Excluir matéria?</DialogTitle><DialogDescription>As atividades e horários ligados a esta matéria serão removidos do quadro.</DialogDescription></DialogHeader><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setRemoving(null)}>Cancelar</Button><Button variant="destructive" onClick={() => { if (removing) remove.mutate({ id: removing }); setRemoving(null); }} disabled={remove.isPending}>Excluir</Button></div></DialogContent></Dialog>
+    <Dialog open={removing !== null} onOpenChange={next => !next && setRemoving(null)}><DialogContent><DialogHeader><DialogTitle className="font-editorial text-2xl">Arquivar matéria?</DialogTitle><DialogDescription>A matéria sai da grade e das novas atividades. Tarefas concluídas continuam visíveis até cada aluno reabri-las; notas, conclusões e RP não são apagados.</DialogDescription></DialogHeader><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setRemoving(null)}>Cancelar</Button><Button onClick={() => { if (removing) archive.mutate({ id: removing }); setRemoving(null); }} disabled={archive.isPending}>Arquivar</Button></div></DialogContent></Dialog>
   </div>;
 }

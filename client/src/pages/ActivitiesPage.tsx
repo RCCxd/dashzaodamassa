@@ -7,7 +7,7 @@ import { deleteTaskPdf, downloadTaskPdf, uploadTaskPdf } from "@/lib/blob-client
 import type { Activity, ActivityInput, ActivityType, EditorialStatus, Priority } from "@/lib/firestore-data";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import { Check, Circle, Download, ExternalLink, FileText, Filter, Pencil, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import { Archive, Check, Circle, Download, ExternalLink, FileText, Filter, Pencil, Plus, Search, Upload, X } from "lucide-react";
 import { nanoid } from "nanoid";
 import { useMemo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
@@ -49,7 +49,7 @@ export default function ActivitiesPage() {
   const [removePdf, setRemovePdf] = useState(false);
   const [saving, setSaving] = useState(false);
   const isAdmin = me.data?.role === "admin";
-  const subjectOptions = subjects.data ?? [];
+  const subjectOptions = (subjects.data ?? []).filter(subject => !subject.archived);
   const rows = (activities.data ?? []).filter(item => {
     if (deadline === "com_prazo") return Boolean(item.dueDate);
     if (deadline === "sem_prazo") return !item.dueDate;
@@ -65,15 +65,17 @@ export default function ActivitiesPage() {
       void utils.achievements.list.invalidate();
       void utils.ranking.state.invalidate();
       void utils.ranking.leaderboard.invalidate();
-      toast.success(result.completed ? `Atividade concluída${result.earnedRP ? ` · +${result.earnedRP} RP` : ""}.` : "Atividade reaberta.");
+      toast.success(result.completed
+        ? `Atividade concluída · +${result.earnedRP} RP${result.lostRP ? ` (correção de saldo anterior: −${result.lostRP} RP)` : ""}.`
+        : result.lostRP ? `Atividade reaberta · −${result.lostRP} RP.` : "Atividade reaberta.");
       if (result.newlyUnlocked.length) toast.success("Nova conquista desbloqueada!");
     },
   });
-  const remove = firebaseApi.activities.remove.useMutation({
+  const archive = firebaseApi.activities.archive.useMutation({
     onSuccess: () => {
       void utils.activities.list.invalidate();
       void utils.dashboard.summary.invalidate();
-      toast.success("Atividade excluída.");
+      toast.success("Atividade arquivada; histórico e pontos foram preservados.");
     },
     onError: error => toast.error(error.message),
   });
@@ -137,15 +139,10 @@ export default function ActivitiesPage() {
     }
   };
 
-  const removeActivity = async () => {
+  const archiveActivity = async () => {
     if (!deleting) return;
-    const activity = rows.find(item => item.id === deleting);
     try {
-      await remove.mutateAsync({ id: deleting });
-      if (activity?.attachmentPath) {
-        try { await deleteTaskPdf(activity.attachmentPath, activity.id); }
-        catch { toast.warning("Atividade excluída; o PDF órfão continua na Blob privada."); }
-      }
+      await archive.mutateAsync({ id: deleting });
     } catch {
       // A mutation já mostra a falha via onError; evita promise não tratada no handler do diálogo.
     } finally {
@@ -184,7 +181,7 @@ export default function ActivitiesPage() {
             <button type="button" onClick={() => toggle.mutate({ activityId: activity.id })} disabled={toggle.isPending} className={`grid size-7 shrink-0 place-items-center rounded-full border-2 transition ${activity.completed ? "border-brand bg-brand text-brand-foreground" : "border-muted-foreground/40 text-transparent hover:border-brand"}`} aria-label={activity.completed ? `Reabrir ${activity.title}` : `Concluir ${activity.title}`}>{activity.completed ? <Check className="size-4" /> : <Circle className="size-3" />}</button>
             <span className="hidden h-9 w-[3px] shrink-0 rounded-full sm:block" style={{ background: activity.subject.color }} />
             <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2"><h2 className={`font-semibold ${activity.completed ? "text-muted-foreground line-through" : ""}`}>{activity.title}</h2><span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{activity.type}</span><PriorityTag priority={activity.priority} />{activity.attachmentPath && <span className="inline-flex items-center gap-1 rounded-full bg-brand/10 px-2 py-0.5 text-[10px] font-bold text-brand"><FileText className="size-3" />PDF</span>}</div>
+              <div className="flex flex-wrap items-center gap-2"><h2 className={`font-semibold ${activity.completed ? "text-muted-foreground line-through" : ""}`}>{activity.title}</h2><span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{activity.type}</span><PriorityTag priority={activity.priority} />{(activity.archived || activity.subject.archived) && <span className="inline-flex items-center gap-1 rounded-full bg-amber-200/10 px-2 py-0.5 text-[10px] font-bold text-amber-100"><Archive className="size-3" />Arquivada</span>}{activity.attachmentPath && <span className="inline-flex items-center gap-1 rounded-full bg-brand/10 px-2 py-0.5 text-[10px] font-bold text-brand"><FileText className="size-3" />PDF</span>}</div>
               <p className="mt-1 truncate text-xs text-muted-foreground">{activity.subject.name}{activity.description ? ` · ${activity.description}` : ""}</p>
             </div>
             <div className="flex items-center justify-between gap-2 sm:justify-end">
@@ -192,7 +189,7 @@ export default function ActivitiesPage() {
               <div className="flex items-center gap-1">
                 {activity.attachmentPath && <button type="button" onClick={() => handlePdfDownload(activity)} className="editorial-icon-button size-8 p-0" aria-label={`Baixar ${activity.attachmentName ?? "PDF da atividade"}`} title="Baixar PDF"><Download className="size-4" /></button>}
                 {activity.resourceUrl && <a href={activity.resourceUrl} target="_blank" rel="noreferrer" className="editorial-icon-button size-8 p-0" aria-label="Abrir link de apoio"><ExternalLink className="size-4" /></a>}
-                {isAdmin && <><button type="button" onClick={() => openEdit(activity)} className="editorial-icon-button size-8 p-0" aria-label="Editar atividade"><Pencil className="size-4" /></button><button type="button" onClick={() => setDeleting(activity.id)} className="editorial-icon-button size-8 p-0 hover:border-rose-400 hover:bg-rose-400/10 hover:text-rose-300" aria-label="Excluir atividade"><Trash2 className="size-4" /></button></>}
+                {isAdmin && !activity.archived && <><button type="button" onClick={() => openEdit(activity)} className="editorial-icon-button size-8 p-0" aria-label="Editar atividade"><Pencil className="size-4" /></button><button type="button" onClick={() => setDeleting(activity.id)} className="editorial-icon-button size-8 p-0" aria-label="Arquivar atividade" title="Arquivar atividade"><Archive className="size-4" /></button></>}
               </div>
             </div>
           </article>;
@@ -225,6 +222,6 @@ export default function ActivitiesPage() {
       </DialogContent>
     </Dialog>
 
-    <Dialog open={deleting !== null} onOpenChange={open => !open && setDeleting(null)}><DialogContent><DialogHeader><DialogTitle className="font-editorial text-2xl">Excluir atividade?</DialogTitle><DialogDescription>Essa ação remove a tarefa do quadro da turma.</DialogDescription></DialogHeader><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setDeleting(null)}>Cancelar</Button><Button variant="destructive" onClick={() => void removeActivity()} disabled={remove.isPending}>{remove.isPending ? "Excluindo…" : "Excluir"}</Button></div></DialogContent></Dialog>
+    <Dialog open={deleting !== null} onOpenChange={open => !open && setDeleting(null)}><DialogContent><DialogHeader><DialogTitle className="font-editorial text-2xl">Arquivar atividade?</DialogTitle><DialogDescription>Ela sai das listas de tarefas pendentes, mas o histórico é mantido. Quem já concluiu poderá reabri-la para retirar os RP; o PDF também continua guardado.</DialogDescription></DialogHeader><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setDeleting(null)}>Cancelar</Button><Button onClick={() => void archiveActivity()} disabled={archive.isPending}>{archive.isPending ? "Arquivando…" : "Arquivar"}</Button></div></DialogContent></Dialog>
   </div>;
 }

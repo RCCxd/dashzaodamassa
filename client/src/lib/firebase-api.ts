@@ -9,6 +9,8 @@ import {
 import { useFirebaseAuth, logoutFromFirebase } from "@/contexts/FirebaseAuthContext";
 import {
   backfillHistoricalRanking,
+  archiveActivity,
+  archiveSubject,
   createActivity,
   createSubject,
   exportUserData,
@@ -24,8 +26,6 @@ import {
   listLeaderboard,
   listSubjects,
   recordStudySession,
-  removeActivity,
-  removeSubject,
   savePlannerNote,
   saveRankingSettings,
   saveWeeklyGoal,
@@ -125,10 +125,10 @@ export const firebaseApi = {
         }, options);
       },
     },
-    remove: {
+    archive: {
       useMutation(options?: MutationOptions<{ success: true }, { id: string }>) {
         return mutationWithOptions(async ({ id }) => {
-          await removeSubject(id);
+          await archiveSubject(id);
           return { success: true as const };
         }, options);
       },
@@ -155,10 +155,10 @@ export const firebaseApi = {
         }, options);
       },
     },
-    remove: {
+    archive: {
       useMutation(options?: MutationOptions<{ success: true }, { id: string }>) {
         return mutationWithOptions(async ({ id }) => {
-          await removeActivity(id);
+          await archiveActivity(id);
           return { success: true as const };
         }, options);
       },

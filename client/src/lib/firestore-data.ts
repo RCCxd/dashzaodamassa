@@ -11,9 +11,13 @@ import {
   updateDoc,
   where,
   query,
+  limit,
+  onSnapshot,
+  orderBy,
   runTransaction,
   writeBatch,
   type DocumentData,
+  type Unsubscribe,
 } from "firebase/firestore";
 import { requireFirestore } from "@/lib/firebase";
 import { pointsForActivity } from "@/lib/ranking";
@@ -39,6 +43,8 @@ export type Subject = {
   schedule: string | null;
   description: string | null;
   weeklySlots: SubjectScheduleSlot[];
+  archived: boolean;
+  archivedAt: Date | null;
 };
 
 export type Activity = {
@@ -58,6 +64,8 @@ export type Activity = {
   estimatedMinutes: number;
   completed: boolean;
   completedAt: Date | null;
+  archived: boolean;
+  archivedAt: Date | null;
 };
 
 export type StudySession = {
@@ -71,8 +79,8 @@ export type StudySession = {
 };
 
 export type SubjectSlotInput = Omit<SubjectScheduleSlot, "id" | "subjectId"> & { id?: string };
-export type SubjectInput = Omit<Subject, "id" | "weeklySlots"> & { weeklySlots?: SubjectSlotInput[] };
-export type ActivityInput = Omit<Activity, "id" | "subject" | "completed" | "completedAt">;
+export type SubjectInput = Omit<Subject, "id" | "weeklySlots" | "archived" | "archivedAt"> & { weeklySlots?: SubjectSlotInput[] };
+export type ActivityInput = Omit<Activity, "id" | "subject" | "completed" | "completedAt" | "archived" | "archivedAt">;
 export type VisualPreferences = {
   accent: "lime" | "indigo" | "coral" | "violet";
   surface: "graphite" | "ink" | "plum";
@@ -128,6 +136,8 @@ function subjectFrom(id: string, data: DocumentData): Subject {
     schedule: nullableText(data.schedule),
     description: nullableText(data.description),
     weeklySlots: [],
+    archived: data.archived === true,
+    archivedAt: asDate(data.archivedAt),
   };
 }
 
@@ -145,6 +155,8 @@ function activityFields(data: DocumentData) {
     attachmentName: nullableText(data.attachmentName),
     attachmentSize: typeof data.attachmentSize === "number" ? data.attachmentSize : null,
     estimatedMinutes: typeof data.estimatedMinutes === "number" ? data.estimatedMinutes : 30,
+    archived: data.archived === true,
+    archivedAt: asDate(data.archivedAt),
   };
 }
 
@@ -209,7 +221,7 @@ export async function listActivities(uid: string): Promise<Activity[]> {
   ]);
   const subjects = new Map(subjectSnapshot.docs.map(item => [item.id, subjectFrom(item.id, item.data())]));
   const completions = new Map(completionSnapshot.docs.map(item => [item.id, asDate(item.data().completedAt)]));
-  return activitySnapshot.docs.map(item => {
+  return activitySnapshot.docs.flatMap(item => {
     const data = item.data();
     const fields = activityFields(data);
     const subject = subjects.get(fields.subjectId) ?? {
@@ -220,9 +232,13 @@ export async function listActivities(uid: string): Promise<Activity[]> {
       schedule: null,
       description: null,
       weeklySlots: [],
+      archived: false,
+      archivedAt: null,
     };
     const completedAt = completions.get(item.id) ?? null;
-    return { id: item.id, ...fields, subject, completed: completions.has(item.id), completedAt };
+    const completed = completions.has(item.id);
+    if ((fields.archived || subject.archived) && !completed) return [];
+    return [{ id: item.id, ...fields, subject, completed, completedAt }];
   }).sort((a, b) => {
     if (!a.dueDate && !b.dueDate) return a.title.localeCompare(b.title, "pt-BR");
     if (!a.dueDate) return 1;
@@ -246,7 +262,7 @@ export async function createSubject(input: SubjectInput): Promise<string> {
   const subjectRef = doc(collection(db, "subjects"));
   const batch = writeBatch(db);
   const now = serverTimestamp();
-  batch.set(subjectRef, { ...subjectFields(input), createdAt: now, updatedAt: now });
+  batch.set(subjectRef, { ...subjectFields(input), archived: false, archivedAt: null, createdAt: now, updatedAt: now });
   (input.weeklySlots ?? []).forEach(slot => {
     const { id: _ignored, ...fields } = slot;
     const slotRef = doc(collection(db, "subjectSchedule"));
@@ -274,27 +290,18 @@ export async function updateSubject(id: string, input: SubjectInput): Promise<vo
   await batch.commit();
 }
 
-export async function removeSubject(id: string): Promise<void> {
-  const db = requireFirestore();
-  const [related, slots] = await Promise.all([
-    getDocs(query(collection(db, "activities"), where("subjectId", "==", id))),
-    getDocs(query(collection(db, "subjectSchedule"), where("subjectId", "==", id))),
-  ]);
-  for (let offset = 0; offset < related.docs.length; offset += 450) {
-    const batch = writeBatch(db);
-    related.docs.slice(offset, offset + 450).forEach(item => batch.delete(item.ref));
-    await batch.commit();
-  }
-  const batch = writeBatch(db);
-  slots.docs.forEach(item => batch.delete(item.ref));
-  batch.delete(doc(db, "subjects", id));
-  await batch.commit();
+export async function archiveSubject(id: string): Promise<void> {
+  const reference = doc(requireFirestore(), "subjects", id);
+  const snapshot = await getDoc(reference);
+  if (!snapshot.exists()) throw new Error("Matéria não encontrada.");
+  if (snapshot.data().archived === true) return;
+  await updateDoc(reference, { archived: true, archivedAt: serverTimestamp(), updatedAt: serverTimestamp() });
 }
 
 export async function createActivity(input: ActivityInput, activityId?: string): Promise<string> {
   const db = requireFirestore();
   const subject = await getDoc(doc(db, "subjects", input.subjectId));
-  if (!subject.exists()) throw new Error("Matéria não encontrada.");
+  if (!subject.exists() || subject.data().archived === true) throw new Error("Matéria não encontrada ou arquivada.");
   const reference = activityId ? doc(db, "activities", activityId) : doc(collection(db, "activities"));
   if (activityId && (await getDoc(reference)).exists()) throw new Error("Este identificador de atividade já existe. Feche o formulário e tente novamente.");
   const now = serverTimestamp();
@@ -306,6 +313,8 @@ export async function createActivity(input: ActivityInput, activityId?: string):
     attachmentName: input.attachmentName || null,
     attachmentSize: input.attachmentSize ?? null,
     dueDate: input.dueDate ?? null,
+    archived: false,
+    archivedAt: null,
     createdAt: now,
     updatedAt: now,
   });
@@ -315,7 +324,9 @@ export async function createActivity(input: ActivityInput, activityId?: string):
 export async function updateActivity(id: string, input: ActivityInput): Promise<void> {
   const db = requireFirestore();
   const subject = await getDoc(doc(db, "subjects", input.subjectId));
-  if (!subject.exists()) throw new Error("Matéria não encontrada.");
+  const activity = await getDoc(doc(db, "activities", id));
+  if (!subject.exists() || subject.data().archived === true) throw new Error("Matéria não encontrada ou arquivada.");
+  if (!activity.exists() || activity.data().archived === true) throw new Error("Atividade não encontrada ou arquivada.");
   await updateDoc(doc(db, "activities", id), {
     ...input,
     description: input.description || null,
@@ -328,8 +339,12 @@ export async function updateActivity(id: string, input: ActivityInput): Promise<
   });
 }
 
-export async function removeActivity(id: string): Promise<void> {
-  await deleteDoc(doc(requireFirestore(), "activities", id));
+export async function archiveActivity(id: string): Promise<void> {
+  const reference = doc(requireFirestore(), "activities", id);
+  const snapshot = await getDoc(reference);
+  if (!snapshot.exists()) throw new Error("Atividade não encontrada.");
+  if (snapshot.data().archived === true) return;
+  await updateDoc(reference, { archived: true, archivedAt: serverTimestamp(), updatedAt: serverTimestamp() });
 }
 
 async function listStudySessions(uid: string): Promise<StudySession[]> {
@@ -364,22 +379,30 @@ export async function getRankingState(uid: string): Promise<{ totalRP: number; r
     getDocs(userCollection(uid, "rankedActivities")),
   ]);
   const value = state.exists() && typeof state.data().totalRP === "number" ? state.data().totalRP : 0;
-  return { totalRP: value, rankedActivities: ledger.size };
+  return { totalRP: value, rankedActivities: ledger.docs.filter(item => item.data().active !== false).length };
 }
 
-export async function backfillHistoricalRanking(uid: string): Promise<{ awarded: number; earnedRP: number }> {
+export async function backfillHistoricalRanking(uid: string): Promise<{ awarded: number; earnedRP: number; reversed: number; lostRP: number }> {
   const db = requireFirestore();
   const [completions, ledger] = await Promise.all([
     getDocs(userCollection(uid, "activityCompletions")),
     getDocs(userCollection(uid, "rankedActivities")),
   ]);
-  const alreadyRanked = new Set(ledger.docs.map(item => item.id));
+  const completionIds = new Set(completions.docs.map(item => item.id));
+  const ledgerById = new Map(ledger.docs.map(item => [item.id, item]));
+  const candidates = new Set<string>();
+  completions.docs.forEach(item => {
+    if (!ledgerById.has(item.id) || ledgerById.get(item.id)?.data().active === false) candidates.add(item.id);
+  });
+  ledger.docs.forEach(item => {
+    if (!completionIds.has(item.id) && item.data().active !== false) candidates.add(item.id);
+  });
   let awarded = 0;
   let earnedRP = 0;
+  let reversed = 0;
+  let lostRP = 0;
 
-  for (const completion of completions.docs) {
-    const activityId = completion.id;
-    if (alreadyRanked.has(activityId)) continue;
+  for (const activityId of candidates) {
     const activityRef = doc(db, "activities", activityId);
     const completionRef = doc(db, "users", uid, "activityCompletions", activityId);
     const ledgerRef = doc(db, "users", uid, "rankedActivities", activityId);
@@ -390,24 +413,40 @@ export async function backfillHistoricalRanking(uid: string): Promise<{ awarded:
       const [activity, existingCompletion, existingLedger, state, settings] = await Promise.all([
         transaction.get(activityRef), transaction.get(completionRef), transaction.get(ledgerRef), transaction.get(stateRef), transaction.get(settingsRef),
       ]);
-      if (!activity.exists() || !existingCompletion.exists() || existingLedger.exists()) return null;
-      const priority = (activity.data().priority ?? "media") as Priority;
-      const points = pointsForActivity(priority);
-      const totalRP = (state.exists() && typeof state.data().totalRP === "number" ? state.data().totalRP : 0) + points;
-      transaction.set(ledgerRef, { activityId, points, awardedAt: serverTimestamp() });
-      transaction.set(stateRef, { totalRP, lastActivityId: activityId, updatedAt: serverTimestamp() });
-      if (settings.exists() && settings.data().visible === true) {
-        transaction.set(publicRef, { displayName: text(settings.data().publicName, "Aluno"), totalRP, updatedAt: serverTimestamp() });
+      const totalBefore = state.exists() && typeof state.data().totalRP === "number" ? state.data().totalRP : 0;
+      const ledgerData = existingLedger.exists() ? existingLedger.data() : {};
+      if (existingCompletion.exists() && (!existingLedger.exists() || ledgerData.active === false)) {
+        if (!activity.exists()) return null;
+        const points = pointsForActivity((activity.data().priority ?? "media") as Priority, (activity.data().type ?? "tarefa") as ActivityType);
+        const totalRP = totalBefore + points;
+        transaction.set(ledgerRef, { activityId, points, awardedAt: serverTimestamp(), active: true, reversedAt: null });
+        transaction.set(stateRef, { totalRP, lastActivityId: activityId, updatedAt: serverTimestamp() });
+        if (settings.exists() && settings.data().visible === true) {
+          transaction.set(publicRef, { displayName: text(settings.data().publicName, "Aluno"), totalRP, updatedAt: serverTimestamp() });
+        }
+        return { kind: "awarded" as const, points };
       }
-      return points;
+      if (!existingCompletion.exists() && existingLedger.exists() && ledgerData.active !== false) {
+        const points = typeof ledgerData.points === "number" ? Math.max(0, Math.trunc(ledgerData.points)) : 0;
+        const totalRP = Math.max(0, totalBefore - points);
+        transaction.update(ledgerRef, { active: false, reversedAt: serverTimestamp() });
+        transaction.set(stateRef, { totalRP, lastActivityId: activityId, updatedAt: serverTimestamp() });
+        if (settings.exists() && settings.data().visible === true) {
+          transaction.set(publicRef, { displayName: text(settings.data().publicName, "Aluno"), totalRP, updatedAt: serverTimestamp() });
+        }
+        return { kind: "reversed" as const, points };
+      }
+      return null;
     });
-    if (outcome !== null) {
-      alreadyRanked.add(activityId);
+    if (outcome?.kind === "awarded") {
       awarded += 1;
-      earnedRP += outcome;
+      earnedRP += outcome.points;
+    } else if (outcome?.kind === "reversed") {
+      reversed += 1;
+      lostRP += outcome.points;
     }
   }
-  return { awarded, earnedRP };
+  return { awarded, earnedRP, reversed, lostRP };
 }
 
 export async function getRankingSettings(uid: string): Promise<RankingSettings> {
@@ -418,12 +457,25 @@ export async function getRankingSettings(uid: string): Promise<RankingSettings> 
 }
 
 export async function listLeaderboard(): Promise<LeaderboardEntry[]> {
-  const snapshot = await getDocs(collection(requireFirestore(), "leaderboard"));
+  const rankingQuery = query(collection(requireFirestore(), "leaderboard"), orderBy("totalRP", "desc"), limit(100));
+  const snapshot = await getDocs(rankingQuery);
   return snapshot.docs.map(item => ({
     uid: item.id,
     displayName: text(item.data().displayName, "Aluno"),
     totalRP: typeof item.data().totalRP === "number" ? item.data().totalRP : 0,
   })).sort((a, b) => b.totalRP - a.totalRP || a.displayName.localeCompare(b.displayName, "pt-BR"));
+}
+
+export function subscribeLeaderboard(onRows: (rows: LeaderboardEntry[]) => void, onError: (error: Error) => void): Unsubscribe {
+  const rankingQuery = query(collection(requireFirestore(), "leaderboard"), orderBy("totalRP", "desc"), limit(100));
+  return onSnapshot(rankingQuery, snapshot => {
+    const rows = snapshot.docs.map(item => ({
+      uid: item.id,
+      displayName: text(item.data().displayName, "Aluno"),
+      totalRP: typeof item.data().totalRP === "number" ? item.data().totalRP : 0,
+    })).sort((a, b) => b.totalRP - a.totalRP || a.displayName.localeCompare(b.displayName, "pt-BR"));
+    onRows(rows);
+  }, onError);
 }
 
 export async function saveRankingSettings(uid: string, settings: RankingSettings): Promise<void> {
@@ -446,7 +498,7 @@ async function newlyUnlocked(uid: string, before: Set<string>): Promise<string[]
   return current.filter(item => item.unlocked && !before.has(item.code)).map(item => item.code);
 }
 
-export async function toggleCompletion(uid: string, activityId: string): Promise<{ completed: boolean; newlyUnlocked: string[]; earnedRP: number }> {
+export async function toggleCompletion(uid: string, activityId: string): Promise<{ completed: boolean; newlyUnlocked: string[]; earnedRP: number; lostRP: number }> {
   const db = requireFirestore();
   const reference = doc(db, "users", uid, "activityCompletions", activityId);
   const before = new Set((await listAchievements(uid)).filter(item => item.unlocked).map(item => item.code));
@@ -464,16 +516,34 @@ export async function toggleCompletion(uid: string, activityId: string): Promise
       transaction.get(settingsRef),
     ]);
     if (completion.exists()) {
+      const ledgerIsActive = ledger.exists() && ledger.data().active !== false;
+      const lostRP = ledgerIsActive && typeof ledger.data().points === "number" ? Math.max(0, Math.trunc(ledger.data().points)) : 0;
       transaction.delete(reference);
-      return { completed: false, earnedRP: 0 };
+      if (ledgerIsActive && ledger.exists()) {
+        const totalBefore = state.exists() && typeof state.data().totalRP === "number" ? state.data().totalRP : 0;
+        const totalAfter = Math.max(0, totalBefore - lostRP);
+        transaction.update(ledgerRef, { active: false, reversedAt: serverTimestamp() });
+        transaction.set(stateRef, { totalRP: totalAfter, lastActivityId: activityId, updatedAt: serverTimestamp() });
+        if (settings.exists() && settings.data().visible === true) {
+          transaction.set(publicRef, { displayName: text(settings.data().publicName, "Aluno"), totalRP: totalAfter, updatedAt: serverTimestamp() });
+        }
+      }
+      return { completed: false, earnedRP: 0, lostRP };
     }
     if (!activity.exists()) throw new Error("Atividade não encontrada.");
+    if (activity.data().archived === true) throw new Error("Esta atividade foi arquivada e não pode ser concluída novamente.");
+    const subjectId = text(activity.data().subjectId);
+    if (!subjectId) throw new Error("A matéria desta atividade não está disponível.");
+    const subject = await transaction.get(doc(db, "subjects", subjectId));
+    if (!subject.exists() || subject.data().archived === true) throw new Error("A matéria desta atividade foi arquivada; não é possível concluir tarefas novas dela.");
     const totalBefore = state.exists() && typeof state.data().totalRP === "number" ? state.data().totalRP : 0;
-    const earnedRP = ledger.exists() ? 0 : pointsForActivity((activity.data().priority ?? "media") as Priority);
-    const totalAfter = totalBefore + earnedRP;
+    const earnedRP = pointsForActivity((activity.data().priority ?? "media") as Priority, (activity.data().type ?? "tarefa") as ActivityType);
+    const staleRP = ledger.exists() && ledger.data().active !== false && typeof ledger.data().points === "number"
+      ? Math.max(0, Math.trunc(ledger.data().points)) : 0;
+    const totalAfter = Math.max(0, totalBefore - staleRP) + earnedRP;
     transaction.set(reference, { activityId, completedAt: serverTimestamp() });
-    if (!ledger.exists()) transaction.set(ledgerRef, { activityId, points: earnedRP, awardedAt: serverTimestamp() });
-    if (!state.exists() || earnedRP > 0) transaction.set(stateRef, {
+    transaction.set(ledgerRef, { activityId, points: earnedRP, awardedAt: serverTimestamp(), active: true, reversedAt: null });
+    if (!state.exists() || earnedRP > 0 || staleRP > 0) transaction.set(stateRef, {
       totalRP: totalAfter,
       lastActivityId: earnedRP > 0 ? activityId : (state.exists() ? state.data().lastActivityId ?? null : null),
       updatedAt: serverTimestamp(),
@@ -485,7 +555,7 @@ export async function toggleCompletion(uid: string, activityId: string): Promise
         updatedAt: serverTimestamp(),
       });
     }
-    return { completed: true, earnedRP };
+    return { completed: true, earnedRP, lostRP: staleRP };
   });
   return {
     ...outcome,
@@ -556,7 +626,8 @@ export async function getStudyStats(uid: string) {
 }
 
 export async function getDashboardData(uid: string) {
-  const [activities, subjects, sessions] = await Promise.all([listActivities(uid), listSubjects(), listStudySessions(uid)]);
+  const [activities, allSubjects, sessions] = await Promise.all([listActivities(uid), listSubjects(), listStudySessions(uid)]);
+  const subjects = allSubjects.filter(subject => !subject.archived);
   const total = activities.length;
   const completed = activities.filter(item => item.completed).length;
   const today = new Date();

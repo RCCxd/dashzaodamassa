@@ -1,4 +1,4 @@
-import type { Priority } from "@/lib/firestore-data";
+import type { ActivityType, Priority } from "@/lib/firestore-data";
 
 const DIVISIONS = ["I", "II", "III"] as const;
 const RANK_GROUPS = [
@@ -12,6 +12,10 @@ const RANK_GROUPS = [
   { name: "Imortal", color: "#ce6677" },
 ] as const;
 
+export const RP_PER_DIVISION = 50;
+export const RADIANT_START_RP = RANK_GROUPS.length * DIVISIONS.length * RP_PER_DIVISION;
+const TYPE_BONUS: Record<ActivityType, number> = { tarefa: 0, prova: 5, trabalho: 3, projeto: 4 };
+
 export type ValorantRank = {
   label: string;
   group: string;
@@ -22,26 +26,26 @@ export type ValorantRank = {
   nextThreshold: number | null;
 };
 
-/** Uma conclusão escolar dá RP uma única vez; Pomodoro e sessões livres nunca entram nesta conta. */
-export function pointsForActivity(priority: Priority): number {
-  return 10 + (priority === "alta" ? 5 : priority === "media" ? 2 : 0);
+/** RP combinam prioridade e tipo; Pomodoro, sessões livres e tempo de foco nunca entram nesta conta. */
+export function pointsForActivity(priority: Priority, type: ActivityType = "tarefa"): number {
+  const priorityPoints = 10 + (priority === "alta" ? 5 : priority === "media" ? 2 : 0);
+  return priorityPoints + TYPE_BONUS[type];
 }
 
 export function resolveValorantRank(rawTotalRP: number): ValorantRank {
   const totalRP = Math.max(0, Math.floor(Number.isFinite(rawTotalRP) ? rawTotalRP : 0));
-  const radiantStart = RANK_GROUPS.length * DIVISIONS.length * 100;
-  if (totalRP >= radiantStart) {
+  if (totalRP >= RADIANT_START_RP) {
     return {
       label: "Radiante",
       group: "Radiante",
       division: null,
       color: "#f4d56f",
       totalRP,
-      rr: totalRP - radiantStart,
+      rr: totalRP - RADIANT_START_RP,
       nextThreshold: null,
     };
   }
-  const tierIndex = Math.floor(totalRP / 100);
+  const tierIndex = Math.floor(totalRP / RP_PER_DIVISION);
   const group = RANK_GROUPS[Math.floor(tierIndex / DIVISIONS.length)];
   const division = DIVISIONS[tierIndex % DIVISIONS.length];
   return {
@@ -50,12 +54,12 @@ export function resolveValorantRank(rawTotalRP: number): ValorantRank {
     division,
     color: group.color,
     totalRP,
-    rr: totalRP % 100,
-    nextThreshold: (tierIndex + 1) * 100,
+    rr: totalRP % RP_PER_DIVISION,
+    nextThreshold: (tierIndex + 1) * RP_PER_DIVISION,
   };
 }
 
 export function progressToNextRank(rank: ValorantRank): number {
   if (rank.nextThreshold === null) return 100;
-  return Math.max(0, Math.min(100, Math.round((rank.rr / 100) * 100)));
+  return Math.max(0, Math.min(100, Math.round((rank.rr / RP_PER_DIVISION) * 100)));
 }

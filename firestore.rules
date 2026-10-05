@@ -9,7 +9,7 @@ service cloud.firestore {
     // Substitua o marcador pelo UID da conta administrativa criada no Console Firebase.
     // Se esquecer, nenhum usuário terá permissão administrativa.
     function isAdmin() {
-      return signedIn() && request.auth.uid == "REPLACE_WITH_ADMIN_UID";
+      return signedIn() && request.auth.uid == "OnUYUaC8B8Nnpkh679DWAspK7392";
     }
 
     function owns(uid) {
@@ -31,7 +31,7 @@ service cloud.firestore {
     }
 
     function validSubject() {
-      return request.resource.data.keys().hasOnly(["name", "color", "teacher", "schedule", "description", "createdAt", "updatedAt"])
+      return request.resource.data.keys().hasOnly(["name", "color", "teacher", "schedule", "description", "archived", "archivedAt", "createdAt", "updatedAt"])
         && request.resource.data.name is string
         && request.resource.data.name.size() >= 1
         && request.resource.data.name.size() <= 120
@@ -39,12 +39,19 @@ service cloud.firestore {
         && request.resource.data.color.size() <= 16
         && isOptionalString(request.resource.data.teacher, 120)
         && isOptionalString(request.resource.data.schedule, 160)
-        && isOptionalString(request.resource.data.description, 2000);
+        && isOptionalString(request.resource.data.description, 2000)
+        && request.resource.data.get("archived", false) is bool
+        && (request.resource.data.get("archived", false)
+          ? request.resource.data.get("archivedAt", null) is timestamp
+          : request.resource.data.get("archivedAt", null) == null);
     }
 
     function validActivity() {
-      return request.resource.data.keys().hasOnly(["subjectId", "title", "description", "type", "priority", "status", "dueDate", "resourceUrl", "attachmentPath", "attachmentName", "attachmentSize", "estimatedMinutes", "createdAt", "updatedAt"])
+      let subjectPath = /databases/$(database)/documents/subjects/$(request.resource.data.subjectId);
+      return request.resource.data.keys().hasOnly(["subjectId", "title", "description", "type", "priority", "status", "dueDate", "resourceUrl", "attachmentPath", "attachmentName", "attachmentSize", "estimatedMinutes", "archived", "archivedAt", "createdAt", "updatedAt"])
         && request.resource.data.subjectId is string
+        && exists(subjectPath)
+        && get(subjectPath).data.get("archived", false) != true
         && request.resource.data.title is string
         && request.resource.data.title.size() >= 1
         && request.resource.data.title.size() <= 180
@@ -59,18 +66,50 @@ service cloud.firestore {
         && (request.resource.data.attachmentSize == null || (request.resource.data.attachmentSize is int && request.resource.data.attachmentSize >= 1 && request.resource.data.attachmentSize <= 10485760))
         && request.resource.data.estimatedMinutes is int
         && request.resource.data.estimatedMinutes >= 1
-        && request.resource.data.estimatedMinutes <= 1440;
+        && request.resource.data.estimatedMinutes <= 1440
+        && request.resource.data.get("archived", false) is bool
+        && (request.resource.data.get("archived", false)
+          ? request.resource.data.get("archivedAt", null) is timestamp
+          : request.resource.data.get("archivedAt", null) == null);
     }
 
-    function activityPoints(priority) {
-      return 10 + (priority == "alta" ? 5 : priority == "media" ? 2 : 0);
+    function isActiveSubject(subjectId) {
+      return subjectId is string
+        && exists(/databases/$(database)/documents/subjects/$(subjectId))
+        && get(/databases/$(database)/documents/subjects/$(subjectId)).data.get("archived", false) != true;
+    }
+
+    function activityPoints(priority, activityType) {
+      let priorityPoints = 10 + (priority == "alta" ? 5 : priority == "media" ? 2 : 0);
+      let typeBonus = activityType == "prova" ? 5 : activityType == "trabalho" ? 3 : activityType == "projeto" ? 4 : 0;
+      return priorityPoints + typeBonus;
+    }
+
+    function ledgerIsActive(data) {
+      return !data.keys().hasAll(["active"]) || data.active == true;
+    }
+
+    function subtractRP(totalRP, points) {
+      return totalRP >= points ? totalRP - points : 0;
+    }
+
+    function publicRankIsSynced(uid, totalRP) {
+      let settingsPath = /databases/$(database)/documents/users/$(uid)/ranking/settings;
+      let publicPath = /databases/$(database)/documents/leaderboard/$(uid);
+      return !exists(settingsPath)
+        || get(settingsPath).data.visible != true
+        || (existsAfter(publicPath)
+          && getAfter(publicPath).data.totalRP == totalRP
+          && getAfter(publicPath).data.displayName == get(settingsPath).data.publicName);
     }
 
     function validScheduleSlot() {
+      let subjectPath = /databases/$(database)/documents/subjects/$(request.resource.data.subjectId);
       return request.resource.data.keys().hasOnly(["subjectId", "day", "startTime", "endTime", "room", "createdAt", "updatedAt"])
         && request.resource.data.keys().hasAll(["subjectId", "day", "startTime", "endTime", "room", "createdAt", "updatedAt"])
         && request.resource.data.subjectId is string
-        && existsAfter(/databases/$(database)/documents/subjects/$(request.resource.data.subjectId))
+        && existsAfter(subjectPath)
+        && getAfter(subjectPath).data.get("archived", false) != true
         && request.resource.data.day is int
         && request.resource.data.day >= 1
         && request.resource.data.day <= 5
@@ -90,22 +129,40 @@ service cloud.firestore {
       let ledgerPath = /databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId);
       let completionPath = /databases/$(database)/documents/users/$(uid)/activityCompletions/$(activityId);
       let activityPath = /databases/$(database)/documents/activities/$(activityId);
+      let oldTotal = exists(statePath) ? get(statePath).data.totalRP : 0;
+      let oldPoints = exists(ledgerPath) ? get(ledgerPath).data.points : 0;
+      let oldActive = exists(ledgerPath) && ledgerIsActive(get(ledgerPath).data);
+      let totalAfter = request.resource.data.totalRP;
+      let newPoints = existsAfter(ledgerPath) ? getAfter(ledgerPath).data.points : 0;
       return request.resource.data.keys().hasOnly(["totalRP", "lastActivityId", "updatedAt"])
         && request.resource.data.keys().hasAll(["totalRP", "lastActivityId", "updatedAt"])
         && request.resource.data.totalRP is int
-        && request.resource.data.totalRP >= 0
+        && totalAfter >= 0
         && request.resource.data.updatedAt == request.time
-        && ((activityId == null && request.resource.data.totalRP == 0 && !exists(statePath))
+        && ((activityId == null && totalAfter == 0 && !exists(statePath))
           || (activityId is string
-            && exists(activityPath)
-            && !exists(ledgerPath)
             && existsAfter(ledgerPath)
-            && getAfter(ledgerPath).data.points == activityPoints(get(activityPath).data.priority)
-            && existsAfter(completionPath)
-            && (exists(completionPath)
-              ? get(completionPath).data.activityId == activityId && get(completionPath).data.completedAt is timestamp
-              : getAfter(completionPath).data.completedAt == request.time)
-            && request.resource.data.totalRP == (exists(statePath) ? get(statePath).data.totalRP : 0) + getAfter(ledgerPath).data.points));
+            && getAfter(ledgerPath).data.activityId == activityId
+            && publicRankIsSynced(uid, totalAfter)
+            && ((existsAfter(completionPath)
+              && exists(activityPath)
+              && (exists(completionPath)
+                || (get(activityPath).data.get("archived", false) != true
+                  && isActiveSubject(get(activityPath).data.subjectId)))
+              && getAfter(ledgerPath).data.active == true
+              && newPoints == activityPoints(get(activityPath).data.get("priority", "media"), get(activityPath).data.get("type", "tarefa"))
+              && (exists(completionPath)
+                ? get(completionPath).data.activityId == activityId && get(completionPath).data.completedAt is timestamp
+                : getAfter(completionPath).data.activityId == activityId && getAfter(completionPath).data.completedAt == request.time)
+              && ((!exists(ledgerPath) || !oldActive) && totalAfter == oldTotal + newPoints
+                || (exists(ledgerPath) && oldActive && !exists(completionPath)
+                  && totalAfter == subtractRP(oldTotal, oldPoints) + newPoints)))
+              || (!existsAfter(completionPath)
+                && exists(ledgerPath)
+                && oldActive
+                && getAfter(ledgerPath).data.active == false
+                && getAfter(ledgerPath).data.points == oldPoints
+                && totalAfter == subtractRP(oldTotal, oldPoints)))));
     }
 
     function validRankSettings(uid) {
@@ -142,25 +199,132 @@ service cloud.firestore {
         && request.resource.data.totalRP == getAfter(statePath).data.totalRP;
     }
 
-    function validRankLedger(uid, activityId) {
+    function validRankLedgerCreate(uid, activityId) {
       let activityPath = /databases/$(database)/documents/activities/$(activityId);
       let ledgerPath = /databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId);
       let completionPath = /databases/$(database)/documents/users/$(uid)/activityCompletions/$(activityId);
       let statePath = /databases/$(database)/documents/users/$(uid)/ranking/state;
-      return request.resource.data.keys().hasOnly(["activityId", "points", "awardedAt"])
-        && request.resource.data.keys().hasAll(["activityId", "points", "awardedAt"])
+      let stateBefore = exists(statePath) ? get(statePath).data.totalRP : 0;
+      return request.resource.data.keys().hasOnly(["activityId", "points", "awardedAt", "active", "reversedAt"])
+        && request.resource.data.keys().hasAll(["activityId", "points", "awardedAt", "active", "reversedAt"])
         && request.resource.data.activityId == activityId
         && exists(activityPath)
-        && request.resource.data.points == activityPoints(get(activityPath).data.priority)
+        && (exists(completionPath)
+          || (get(activityPath).data.get("archived", false) != true
+            && isActiveSubject(get(activityPath).data.subjectId)))
+        && request.resource.data.points is int
+        && request.resource.data.points == activityPoints(get(activityPath).data.get("priority", "media"), get(activityPath).data.get("type", "tarefa"))
         && request.resource.data.awardedAt == request.time
+        && request.resource.data.active == true
+        && request.resource.data.reversedAt == null
         && !exists(ledgerPath)
         && existsAfter(completionPath)
         && (exists(completionPath)
           ? get(completionPath).data.activityId == activityId && get(completionPath).data.completedAt is timestamp
-          : getAfter(completionPath).data.completedAt == request.time)
+          : getAfter(completionPath).data.activityId == activityId && getAfter(completionPath).data.completedAt == request.time)
         && existsAfter(statePath)
         && getAfter(statePath).data.lastActivityId == activityId
-        && getAfter(statePath).data.totalRP == (exists(statePath) ? get(statePath).data.totalRP : 0) + request.resource.data.points;
+        && getAfter(statePath).data.totalRP == stateBefore + request.resource.data.points
+        && publicRankIsSynced(uid, getAfter(statePath).data.totalRP);
+    }
+
+    function validRankLedgerUpdate(uid, activityId) {
+      let activityPath = /databases/$(database)/documents/activities/$(activityId);
+      let ledgerPath = /databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId);
+      let completionPath = /databases/$(database)/documents/users/$(uid)/activityCompletions/$(activityId);
+      let statePath = /databases/$(database)/documents/users/$(uid)/ranking/state;
+      let stateBefore = exists(statePath) ? get(statePath).data.totalRP : 0;
+      let oldActive = ledgerIsActive(resource.data);
+      let oldPoints = resource.data.points;
+      let staleTotal = subtractRP(stateBefore, oldPoints);
+      return request.resource.data.keys().hasOnly(["activityId", "points", "awardedAt", "active", "reversedAt"])
+        && request.resource.data.keys().hasAll(["activityId", "points", "awardedAt", "active", "reversedAt"])
+        && request.resource.data.activityId == activityId
+        && request.resource.data.points is int
+        && request.resource.data.points >= 0
+        && ((oldActive
+          && request.resource.data.active == false
+          && request.resource.data.points == oldPoints
+          && request.resource.data.awardedAt == resource.data.awardedAt
+          && request.resource.data.reversedAt == request.time
+          && !existsAfter(completionPath)
+          && existsAfter(statePath)
+          && getAfter(statePath).data.lastActivityId == activityId
+          && getAfter(statePath).data.totalRP == staleTotal
+          && publicRankIsSynced(uid, staleTotal))
+          || (!oldActive
+            && request.resource.data.active == true
+            && exists(activityPath)
+            && (exists(completionPath)
+              || (get(activityPath).data.get("archived", false) != true
+                && isActiveSubject(get(activityPath).data.subjectId)))
+            && request.resource.data.points == activityPoints(get(activityPath).data.get("priority", "media"), get(activityPath).data.get("type", "tarefa"))
+            && request.resource.data.awardedAt == request.time
+            && request.resource.data.reversedAt == null
+            && existsAfter(completionPath)
+            && (exists(completionPath)
+              ? get(completionPath).data.activityId == activityId && get(completionPath).data.completedAt is timestamp
+              : getAfter(completionPath).data.activityId == activityId && getAfter(completionPath).data.completedAt == request.time)
+            && existsAfter(statePath)
+            && getAfter(statePath).data.lastActivityId == activityId
+            && getAfter(statePath).data.totalRP == stateBefore + request.resource.data.points
+            && publicRankIsSynced(uid, getAfter(statePath).data.totalRP))
+          || (oldActive
+            && request.resource.data.active == true
+            && exists(activityPath)
+            && get(activityPath).data.get("archived", false) != true
+            && isActiveSubject(get(activityPath).data.subjectId)
+            && request.resource.data.points == activityPoints(get(activityPath).data.get("priority", "media"), get(activityPath).data.get("type", "tarefa"))
+            && request.resource.data.awardedAt == request.time
+            && request.resource.data.reversedAt == null
+            && !exists(completionPath)
+            && existsAfter(completionPath)
+            && existsAfter(statePath)
+            && getAfter(statePath).data.lastActivityId == activityId
+            && getAfter(statePath).data.totalRP == staleTotal + request.resource.data.points
+            && publicRankIsSynced(uid, getAfter(statePath).data.totalRP)));
+    }
+
+    function validRankCompletionCreate(uid, activityId) {
+      let activityPath = /databases/$(database)/documents/activities/$(activityId);
+      let ledgerPath = /databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId);
+      let statePath = /databases/$(database)/documents/users/$(uid)/ranking/state;
+      let ledgerExists = exists(ledgerPath);
+      let oldActive = ledgerExists && ledgerIsActive(get(ledgerPath).data);
+      let stateBefore = exists(statePath) ? get(statePath).data.totalRP : 0;
+      let oldPoints = ledgerExists ? get(ledgerPath).data.points : 0;
+      return request.resource.data.keys().hasOnly(["activityId", "completedAt"])
+        && request.resource.data.activityId == activityId
+        && request.resource.data.completedAt == request.time
+        && exists(activityPath)
+        && get(activityPath).data.get("archived", false) != true
+        && isActiveSubject(get(activityPath).data.subjectId)
+        && existsAfter(ledgerPath)
+        && getAfter(ledgerPath).data.active == true
+        && getAfter(ledgerPath).data.points == activityPoints(get(activityPath).data.get("priority", "media"), get(activityPath).data.get("type", "tarefa"))
+        && existsAfter(statePath)
+        && getAfter(statePath).data.lastActivityId == activityId
+        && ((!ledgerExists || !oldActive)
+          ? getAfter(statePath).data.totalRP == stateBefore + getAfter(ledgerPath).data.points
+          : getAfter(statePath).data.totalRP == subtractRP(stateBefore, oldPoints) + getAfter(ledgerPath).data.points)
+        && publicRankIsSynced(uid, getAfter(statePath).data.totalRP);
+    }
+
+    function validRankCompletionDelete(uid, activityId) {
+      let ledgerPath = /databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId);
+      let statePath = /databases/$(database)/documents/users/$(uid)/ranking/state;
+      let stateBefore = exists(statePath) ? get(statePath).data.totalRP : 0;
+      let ledgerActive = exists(ledgerPath) && ledgerIsActive(get(ledgerPath).data);
+      let points = exists(ledgerPath) ? get(ledgerPath).data.points : 0;
+      let totalAfter = subtractRP(stateBefore, points);
+      return !ledgerActive
+        || (existsAfter(ledgerPath)
+          && getAfter(ledgerPath).data.active == false
+          && existsAfter(statePath)
+          && getAfter(statePath).data.lastActivityId == activityId
+          && getAfter(statePath).data.updatedAt == request.time
+          && getAfter(statePath).data.totalRP == totalAfter
+          && publicRankIsSynced(uid, totalAfter));
     }
 
     match /users/{uid} {
@@ -177,16 +341,9 @@ service cloud.firestore {
 
       match /activityCompletions/{activityId} {
         allow read: if owns(uid);
-        allow create: if owns(uid)
-          && request.resource.data.keys().hasOnly(["activityId", "completedAt"])
-          && request.resource.data.activityId == activityId
-          && request.resource.data.completedAt == request.time
-          && exists(/databases/$(database)/documents/activities/$(activityId))
-          && (exists(/databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId))
-            || (existsAfter(/databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId))
-              && getAfter(/databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId)).data.activityId == activityId));
+        allow create: if owns(uid) && validRankCompletionCreate(uid, activityId);
         allow update: if false;
-        allow delete: if owns(uid);
+        allow delete: if owns(uid) && validRankCompletionDelete(uid, activityId);
       }
 
       match /studySessions/{sessionId} {
@@ -263,21 +420,22 @@ service cloud.firestore {
 
       match /rankedActivities/{activityId} {
         allow read: if owns(uid);
-        allow create: if owns(uid) && validRankLedger(uid, activityId);
-        allow update, delete: if false;
+        allow create: if owns(uid) && validRankLedgerCreate(uid, activityId);
+        allow update: if owns(uid) && validRankLedgerUpdate(uid, activityId);
+        allow delete: if false;
       }
     }
 
     match /subjects/{subjectId} {
       allow read: if signedIn();
       allow create, update: if isAdmin() && validSubject();
-      allow delete: if isAdmin();
+      allow delete: if false;
     }
 
     match /activities/{activityId} {
       allow read: if signedIn();
       allow create, update: if isAdmin() && validActivity();
-      allow delete: if isAdmin();
+      allow delete: if false;
     }
 
     match /subjectSchedule/{slotId} {

@@ -34,10 +34,12 @@ export function AppShell({ children, user }: { children: ReactNode; user: UserPr
     if (!uid || checkedUid.current === uid) return;
     checkedUid.current = uid;
     void historyMigration.mutateAsync().then(result => {
-      if (!result.awarded) return;
+      if (!result.awarded && !result.reversed) return;
       void utils.ranking.state.invalidate();
       void utils.ranking.leaderboard.invalidate();
-      toast.success(`Seu histórico trouxe ${result.awarded} atividade${result.awarded === 1 ? "" : "s"} e +${result.earnedRP} RP.`);
+      const awarded = result.awarded ? `+${result.earnedRP} RP em ${result.awarded} atividade${result.awarded === 1 ? "" : "s"}` : "";
+      const reversed = result.reversed ? `−${result.lostRP} RP de ${result.reversed} atividade${result.reversed === 1 ? " reaberta" : "s reabertas"}` : "";
+      toast.success(`Histórico ranqueado ajustado: ${[awarded, reversed].filter(Boolean).join("; ")}.`);
     }).catch(error => toast.error(error instanceof Error ? `Histórico ranqueado não carregado: ${error.message}` : "Não foi possível carregar o histórico ranqueado."));
   }, [uid, historyMigration.mutateAsync, utils]);
 
