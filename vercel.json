@@ -8,6 +8,7 @@
     { "source": "/activities", "destination": "/index.html" },
     { "source": "/subjects", "destination": "/index.html" },
     { "source": "/focus", "destination": "/index.html" },
+    { "source": "/ranking", "destination": "/index.html" },
     { "source": "/achievements", "destination": "/index.html" },
     { "source": "/planner", "destination": "/index.html" },
     { "source": "/settings", "destination": "/index.html" },

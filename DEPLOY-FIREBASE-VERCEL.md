@@ -1,15 +1,15 @@
 # Guia do zero: Dashboard do 2B no GitHub, Vercel e Firebase
 
-Este procedimento publica a versão independente do Dashboard do 2B: **site estático Vite na Vercel + login por Firebase Authentication + dados no Cloud Firestore**. O código atual não usa Manus, MySQL/TiDB, Express, tRPC, API própria ou Cloud Functions durante o uso normal.
+Este procedimento publica a versão independente do Dashboard do 2B: **SPA Vite estática na Vercel + uma Function restrita a anexos PDF privados + Firebase Authentication/Cloud Firestore**. O código não usa Manus, MySQL/TiDB, Express, tRPC ou Cloud Functions; as operações normais dos alunos continuam no Firebase SDK.
 
-> **Estado atual:** o código e as regras foram preparados e testados localmente. Ainda é necessário que você crie/configure o seu projeto Firebase, publique as regras, conecte o repositório ao novo projeto Vercel e defina as variáveis abaixo. Nenhum projeto Firebase foi criado nem dado remoto foi alterado por este workspace.
+> **Estado atual:** o código, as regras e a API de anexos foram preparados e testados localmente. Ainda é necessário configurar Firebase/Vercel, publicar as regras e conectar um Blob privado ao projeto Vercel Hobby para os PDFs. Nenhum recurso externo foi criado, publicado ou alterado por este workspace.
 
 ## O que você vai precisar
 
 - Uma conta Google para o [Firebase Console](https://console.firebase.google.com/).
 - Uma conta GitHub e uma conta Vercel.
 - O ZIP atualizado do projeto entregue nesta conversa, ou o conteúdo atual do repositório.
-- **Não precisa de cartão nem upgrade para escolher Firebase Spark.** A documentação oficial lista Spark como sem custo e sem método de pagamento. A Vercel Hobby é gratuita para projetos pessoais/não comerciais. Os limites e termos podem mudar; se alguma tela pedir pagamento ou upgrade, pare e não confirme.
+- **Não precisa de cartão nem upgrade para escolher Firebase Spark.** A Vercel Blob também tem cotas incluídas no Hobby para uso pessoal/não comercial. Os limites e termos podem mudar; se alguma tela pedir pagamento, cartão, Pro, Blaze ou billing, pare e não confirme.
 
 ## Parte 1 — Preparar o código no GitHub
 
@@ -31,7 +31,7 @@ Este procedimento publica a versão independente do Dashboard do 2B: **site est�
 ## Parte 2 — Criar o Firebase gratuito
 
 1. Abra o [Firebase Console](https://console.firebase.google.com/) e crie um projeto novo. Escolha explicitamente o plano **Spark / no-cost**. Analytics é opcional e pode ser ignorado.
-2. **Não associe uma conta de faturamento, não adicione cartão e não mude para Blaze.** Este app não precisa de Firebase App Hosting, Cloud Functions, Phone Auth/SMS nem Cloud Storage.
+2. **Não associe uma conta de faturamento, não adicione cartão e não mude para Blaze.** Este app não precisa de Firebase App Hosting, Cloud Functions, Phone Auth/SMS nem Firebase Cloud Storage; PDFs usam Vercel Blob privado.
 3. Abra **Authentication → Sign-in method** e habilite **Email/Password**. Não habilite Phone Auth.
 4. Abra **Firestore Database → Create database** e escolha **Production mode**. Selecione a edição Standard quando perguntado. Para alunos no Brasil, uma opção próxima é **South America (`southamerica-east1`, São Paulo)**.
    - A localização do Firestore é permanente e **não pode ser alterada depois**. Confira o nome da região antes de confirmar.
@@ -62,7 +62,7 @@ Este procedimento publica a versão independente do Dashboard do 2B: **site est�
    | Install Command | padrão detectado para `pnpm-lock.yaml` |
    | Node.js | `22.x` (declarado em `package.json`) |
 
-   O arquivo `vercel.json` já define Vite, build, saída `dist` e rewrites para as rotas da SPA. **Não selecione Express, não use `public/` como saída e não crie uma API `/api` antiga.**
+   O arquivo `vercel.json` já define Vite, build, saída `dist` e rewrites para as rotas da SPA. A única Function é `api/blob.ts`, usada para PDFs. **Não selecione Express, não use `public/` como saída, não remova `api/blob.ts` e não recrie uma API genérica de cadastro.** Depois do deploy, `GET /api/blob` sem login deve responder JSON `401`, não HTML da SPA nem 404.
 4. Crie o projeto no plano **Hobby**; não escolha Pro. O primeiro deploy pode começar assim que o projeto for criado. Não compartilhe ainda o endereço até completar as variáveis e os testes.
 5. No dashboard do projeto Vercel, abra **Settings → Environment Variables** e adicione cada variável abaixo. Selecione pelo menos **Preview** e **Production** para cada uma. A variável `VITE_FIREBASE_ADMIN_UID` deve ser o mesmo UID usado em `firestore.rules`.
 
@@ -79,6 +79,14 @@ Este procedimento publica a versão independente do Dashboard do 2B: **site est�
 6. Salve as variáveis e faça um novo deploy: abra **Deployments**, selecione o deployment mais recente e use **Redeploy**, ou envie um commit. Alterações nas variáveis de ambiente só valem para novos deployments; mudar as variáveis sem reconstruir não atualiza o site.
 7. Copie o hostname gerado pela Vercel, por exemplo `dashboard-do-2b.vercel.app`, e conclua o passo 9 da Parte 2. Se for testar Preview, adicione o hostname específico do Preview também.
 
+### Vercel Blob privado — somente para anexos PDF
+
+1. No projeto Vercel, abra **Storage → Blob** e crie ou conecte uma store ao projeto. Selecione **Private** (não Public) e mantenha o plano **Hobby**. Não adicione cartão, não associe billing e não aceite Pro.
+2. Quando a store estiver conectada, o SDK pode usar a autorização OIDC gerenciada pela Vercel dentro da Function; não crie `BLOB_READ_WRITE_TOKEN`, chave no navegador, service account ou outro segredo `VITE_*` manualmente.
+3. O código limita cada arquivo a **10 MiB** e `application/pdf`. PDFs não são públicos: somente admin pode enviar/remover; alunos autenticados podem baixar pela Function após conferir que o caminho continua anexado à atividade Firestore. O upload envia os bytes diretamente ao Blob; o download é transmitido em streaming para não bufferizar uma resposta acima do limite de 4,5 MB da Function.
+4. Referência consultada em 05/10/2026: Hobby inclui **1 GB de armazenamento médio, 10.000 operações simples, 2.000 avançadas e 10 GB de transferência**. As cotas podem mudar. O Hobby não cobra excedente automaticamente; ao atingir o limite, o acesso ao Blob pode ser suspenso até a renovação. Acompanhe o painel.
+5. Se o painel não oferecer Blob privado dentro do Hobby ou solicitar pagamento, pare e deixe anexos desativados; **não** mude de plano, billing ou Blaze para fazê-lo funcionar.
+
 ### Sobre produção e Preview
 
 O branch `main` costuma ser o branch de produção: commits nele geram deployment de Production. Os demais branches normalmente geram Previews. Para o primeiro projeto, mantenha o link para você enquanto testa; depois, para testar uma mudança sem substituir a versão principal, envie-a numa branch diferente de `main` e confira o Preview antes de mesclar.
@@ -89,9 +97,10 @@ O branch `main` costuma ser o branch de produção: commits nele geram deploymen
 2. Entre com a conta administrativa criada no Firebase Console. O primeiro login cria automaticamente o perfil Firestore associado ao UID autorizado.
 3. Confirme que o menu administrativo permite criar matérias e atividades.
 4. Abra uma janela anônima ou outro navegador e cadastre uma conta de aluno com e-mail/senha. O aluno deve receber papel `student`, não deve conseguir alterar o catálogo e só deve ver seus próprios registros.
-5. Teste entrar/sair, **Esqueci minha senha**, concluir uma atividade, registrar uma sessão Pomodoro, salvar nota/meta e recarregar a página.
-6. Abra e atualize diretamente as rotas `/login`, `/activities`, `/subjects`, `/focus`, `/achievements`, `/planner` e `/settings`. Os arquivos `/assets/*` devem carregar com HTTP 200; o manifesto está em `/manifest.webmanifest`.
-7. Só então envie aos colegas o endereço de produção `https://SEU-PROJETO.vercel.app`. Não é necessário comprar domínio; o subdomínio `vercel.app` serve para compartilhar.
+5. Teste entrar/sair, **Esqueci minha senha**, concluir uma atividade, registrar uma sessão Pomodoro (**0 RP**), salvar nota/meta e recarregar; experimente mudar a aparência e confira se persiste.
+6. Abra e atualize diretamente `/login`, `/activities`, `/subjects`, `/focus`, `/ranking`, `/achievements`, `/planner` e `/settings`. `/api/blob` sem autenticação deve responder JSON `401`; assets `/assets/*` devem carregar com HTTP 200.
+7. Como admin, anexe um PDF menor que 10 MiB e baixe como aluno. Confirme que arquivo não PDF, PDF acima do limite, upload por usuário não admin e download sem login são recusados. Teste aderir e sair do placar com um aluno.
+8. Só então envie aos colegas o endereço de produção `https://SEU-PROJETO.vercel.app`. Não é necessário comprar domínio; o subdomínio `vercel.app` serve para compartilhar.
 
 ## Parte 5 — (Opcional) importar dados do banco antigo
 
@@ -123,7 +132,10 @@ Trinta alunos, por si só, não garantem nem excedem uma cota: o uso depende das
 | `auth/unauthorized-domain` | Adicione o hostname exato, como `meu-dashboard.vercel.app`, em Authentication → Settings → Authorized domains. Não use URL completa nem wildcard. |
 | `permission-denied` no Firestore | Confira se publicou `firestore.rules` com o UID real, sem o marcador `REPLACE_WITH_ADMIN_UID`; confirme também a variável admin. |
 | Assets CSS/JS 404 ou MIME `text/html` | Confirme que a implantação veio do commit com `vercel.json` Vite, build `pnpm build:vercel`, saída `dist`; o preset Express/saída `public` é configuração antiga. |
-| O cadastro mostra erro de JSON vindo de `/api` | Este código novo não chama `/api`; confirme que Vercel implantou o commit/branch correto, sem código tRPC legado. |
+| `/api/blob` retorna HTML ou 404 | Confira se `api/blob.ts` está na raiz, se Root Directory é `./` e se a integração Vite publicou a Function. Não permita que o rewrite SPA capture `/api/blob`.
+| Upload PDF pede billing/Pro | Pare. Não associe cartão, não habilite billing e não mude o Firebase para Blaze. Anexos exigem Blob privado dentro das cotas Hobby.
+| Download PDF retorna 404 | Confira se o pathname no documento corresponde ao anexo atual e se a store Blob privada continua conectada. URL assinada temporária não é pathname permanente.
+| O cadastro mostra erro de JSON vindo de `/api` | Confirme que o formulário ainda chama Firebase Auth e que Vercel implantou o commit correto, sem código tRPC legado.
 | Ainda aparece a versão antiga | Faça hard refresh; em caso de cache antigo do PWA, limpe os dados do site/service worker e abra novamente. |
 
 ## Fontes oficiais
@@ -132,6 +144,10 @@ Trinta alunos, por si só, não garantem nem excedem uma cota: o uso depende das
 - [Vercel — conectar repositório Git e deployments por branch](https://vercel.com/docs/git)
 - [Vercel — variáveis por ambiente e novo deployment após alteração](https://vercel.com/docs/environment-variables)
 - [Vercel Hobby — preço e escopo de uso](https://vercel.com/docs/plans/hobby)
+- [Vercel Blob — preços e cotas](https://vercel.com/docs/vercel-blob/usage-and-pricing)
+- [Vercel Blob — armazenamento privado](https://vercel.com/docs/vercel-blob/private-storage)
+- [Vercel Blob — autorização de client uploads](https://vercel.com/docs/vercel-blob/client-upload)
+- [Vercel Functions — streaming de respostas](https://vercel.com/docs/functions/streaming)
 - [Firebase — criar projeto e registrar app Web](https://firebase.google.com/docs/web/setup)
 - [Firebase Auth — e-mail e senha](https://firebase.google.com/docs/auth/web/password-auth)
 - [Firebase — publicar Security Rules](https://firebase.google.com/docs/firestore/security/get-started)

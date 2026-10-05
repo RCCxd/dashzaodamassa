@@ -11,14 +11,25 @@ import {
   updateDoc,
   where,
   query,
+  runTransaction,
   writeBatch,
   type DocumentData,
 } from "firebase/firestore";
 import { requireFirestore } from "@/lib/firebase";
+import { pointsForActivity } from "@/lib/ranking";
 
 export type ActivityType = "tarefa" | "prova" | "trabalho" | "projeto";
 export type Priority = "baixa" | "media" | "alta";
 export type EditorialStatus = "pendente" | "em_andamento" | "concluida";
+
+export type SubjectScheduleSlot = {
+  id: string;
+  subjectId: string;
+  day: number;
+  startTime: string;
+  endTime: string;
+  room: string | null;
+};
 
 export type Subject = {
   id: string;
@@ -27,6 +38,7 @@ export type Subject = {
   teacher: string | null;
   schedule: string | null;
   description: string | null;
+  weeklySlots: SubjectScheduleSlot[];
 };
 
 export type Activity = {
@@ -40,6 +52,9 @@ export type Activity = {
   status: EditorialStatus;
   dueDate: Date | null;
   resourceUrl: string | null;
+  attachmentPath: string | null;
+  attachmentName: string | null;
+  attachmentSize: number | null;
   estimatedMinutes: number;
   completed: boolean;
   completedAt: Date | null;
@@ -55,14 +70,28 @@ export type StudySession = {
   completedAt: Date;
 };
 
-export type SubjectInput = Omit<Subject, "id">;
+export type SubjectSlotInput = Omit<SubjectScheduleSlot, "id" | "subjectId"> & { id?: string };
+export type SubjectInput = Omit<Subject, "id" | "weeklySlots"> & { weeklySlots?: SubjectSlotInput[] };
 export type ActivityInput = Omit<Activity, "id" | "subject" | "completed" | "completedAt">;
+export type VisualPreferences = {
+  accent: "lime" | "indigo" | "coral" | "violet";
+  surface: "graphite" | "ink" | "plum";
+  texture: "plain" | "grid";
+  density: "comfortable" | "compact";
+};
+export type RankingSettings = { publicName: string; visible: boolean };
+export type LeaderboardEntry = { uid: string; displayName: string; totalRP: number };
 
 const achievementCatalog = [
   { code: "first_completion", title: "Primeiro passo", description: "Conclua sua primeira atividade.", icon: "Sparkles", target: 1, category: "atividades" },
+  { code: "five_completions", title: "Caderno em movimento", description: "Conclua 5 atividades.", icon: "BookOpenCheck", target: 5, category: "atividades" },
   { code: "ten_completions", title: "Ritmo de estudo", description: "Conclua 10 atividades.", icon: "CheckCheck", target: 10, category: "atividades" },
+  { code: "twentyfive_completions", title: "Mão na massa", description: "Conclua 25 atividades.", icon: "NotebookPen", target: 25, category: "atividades" },
+  { code: "fifty_completions", title: "Nome no quadro", description: "Conclua 50 atividades.", icon: "Medal", target: 50, category: "atividades" },
   { code: "hundred_completions", title: "Centurião", description: "Conclua 100 atividades.", icon: "Trophy", target: 100, category: "atividades" },
+  { code: "three_day_streak", title: "Três dias no ritmo", description: "Estude por 3 dias seguidos.", icon: "Flame", target: 3, category: "foco" },
   { code: "seven_day_streak", title: "Semana em chamas", description: "Estude por 7 dias seguidos.", icon: "Flame", target: 7, category: "foco" },
+  { code: "five_pomodoro_sessions", title: "Cinco ciclos", description: "Registre 5 ciclos Pomodoro.", icon: "Timer", target: 5, category: "foco" },
   { code: "ten_pomodoro_hours", title: "Hora do foco", description: "Acumule 10 horas de Pomodoro.", icon: "Timer", target: 600, category: "foco" },
   { code: "subject_mastery", title: "Matéria em dia", description: "Conclua todas as atividades de uma matéria.", icon: "GraduationCap", target: 1, category: "atividades" },
   { code: "five_days_week", title: "Semana produtiva", description: "Estude em 5 dias nesta semana.", icon: "CalendarDays", target: 5, category: "foco" },
@@ -94,10 +123,11 @@ function subjectFrom(id: string, data: DocumentData): Subject {
   return {
     id,
     name: text(data.name, "Matéria"),
-    color: text(data.color, "#5B6CFF"),
+    color: text(data.color, "#B7E36A"),
     teacher: nullableText(data.teacher),
     schedule: nullableText(data.schedule),
     description: nullableText(data.description),
+    weeklySlots: [],
   };
 }
 
@@ -111,6 +141,9 @@ function activityFields(data: DocumentData) {
     status: (data.status ?? "pendente") as EditorialStatus,
     dueDate: asDate(data.dueDate),
     resourceUrl: nullableText(data.resourceUrl),
+    attachmentPath: nullableText(data.attachmentPath),
+    attachmentName: nullableText(data.attachmentName),
+    attachmentSize: typeof data.attachmentSize === "number" ? data.attachmentSize : null,
     estimatedMinutes: typeof data.estimatedMinutes === "number" ? data.estimatedMinutes : 30,
   };
 }
@@ -147,8 +180,24 @@ function userCollection(uid: string, name: string) {
 }
 
 export async function listSubjects(): Promise<Subject[]> {
-  const snapshot = await getDocs(collection(requireFirestore(), "subjects"));
-  return snapshot.docs.map(item => subjectFrom(item.id, item.data())).sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+  const db = requireFirestore();
+  const [snapshot, scheduleSnapshot] = await Promise.all([
+    getDocs(collection(db, "subjects")),
+    getDocs(collection(db, "subjectSchedule")),
+  ]);
+  const slots = new Map<string, SubjectScheduleSlot[]>();
+  scheduleSnapshot.docs.forEach(item => {
+    const data = item.data();
+    const subjectId = text(data.subjectId);
+    if (!subjectId || typeof data.day !== "number" || typeof data.startTime !== "string" || typeof data.endTime !== "string") return;
+    const current = slots.get(subjectId) ?? [];
+    current.push({ id: item.id, subjectId, day: data.day, startTime: data.startTime, endTime: data.endTime, room: nullableText(data.room) });
+    slots.set(subjectId, current);
+  });
+  return snapshot.docs.map(item => ({
+    ...subjectFrom(item.id, item.data()),
+    weeklySlots: (slots.get(item.id) ?? []).sort((a, b) => a.day - b.day || a.startTime.localeCompare(b.startTime)),
+  })).sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
 }
 
 export async function listActivities(uid: string): Promise<Activity[]> {
@@ -170,6 +219,7 @@ export async function listActivities(uid: string): Promise<Activity[]> {
       teacher: null,
       schedule: null,
       description: null,
+      weeklySlots: [],
     };
     const completedAt = completions.get(item.id) ?? null;
     return { id: item.id, ...fields, subject, completed: completions.has(item.id), completedAt };
@@ -181,49 +231,80 @@ export async function listActivities(uid: string): Promise<Activity[]> {
   });
 }
 
-export async function createSubject(input: SubjectInput): Promise<string> {
-  const now = serverTimestamp();
-  const reference = await addDoc(collection(requireFirestore(), "subjects"), {
-    ...input,
+function subjectFields(input: SubjectInput) {
+  return {
+    name: input.name,
+    color: input.color,
     teacher: input.teacher || null,
     schedule: input.schedule || null,
     description: input.description || null,
-    createdAt: now,
-    updatedAt: now,
+  };
+}
+
+export async function createSubject(input: SubjectInput): Promise<string> {
+  const db = requireFirestore();
+  const subjectRef = doc(collection(db, "subjects"));
+  const batch = writeBatch(db);
+  const now = serverTimestamp();
+  batch.set(subjectRef, { ...subjectFields(input), createdAt: now, updatedAt: now });
+  (input.weeklySlots ?? []).forEach(slot => {
+    const { id: _ignored, ...fields } = slot;
+    const slotRef = doc(collection(db, "subjectSchedule"));
+    batch.set(slotRef, { ...fields, subjectId: subjectRef.id, room: fields.room || null, createdAt: now, updatedAt: now });
   });
-  return reference.id;
+  await batch.commit();
+  return subjectRef.id;
 }
 
 export async function updateSubject(id: string, input: SubjectInput): Promise<void> {
-  await updateDoc(doc(requireFirestore(), "subjects", id), {
-    ...input,
-    teacher: input.teacher || null,
-    schedule: input.schedule || null,
-    description: input.description || null,
-    updatedAt: serverTimestamp(),
+  const db = requireFirestore();
+  const scheduleQuery = query(collection(db, "subjectSchedule"), where("subjectId", "==", id));
+  const existing = await getDocs(scheduleQuery);
+  const existingIds = new Set(existing.docs.map(item => item.id));
+  const desiredIds = new Set((input.weeklySlots ?? []).flatMap(slot => slot.id ? [slot.id] : []));
+  const batch = writeBatch(db);
+  batch.update(doc(db, "subjects", id), { ...subjectFields(input), updatedAt: serverTimestamp() });
+  existing.docs.filter(item => !desiredIds.has(item.id)).forEach(item => batch.delete(item.ref));
+  (input.weeklySlots ?? []).forEach(slot => {
+    const { id: slotId, ...fields } = slot;
+    const data = { ...fields, subjectId: id, room: fields.room || null, updatedAt: serverTimestamp() };
+    if (slotId && existingIds.has(slotId)) batch.update(doc(db, "subjectSchedule", slotId), data);
+    else batch.set(doc(collection(db, "subjectSchedule")), { ...data, createdAt: serverTimestamp() });
   });
+  await batch.commit();
 }
 
 export async function removeSubject(id: string): Promise<void> {
   const db = requireFirestore();
-  const related = await getDocs(query(collection(db, "activities"), where("subjectId", "==", id)));
+  const [related, slots] = await Promise.all([
+    getDocs(query(collection(db, "activities"), where("subjectId", "==", id))),
+    getDocs(query(collection(db, "subjectSchedule"), where("subjectId", "==", id))),
+  ]);
   for (let offset = 0; offset < related.docs.length; offset += 450) {
     const batch = writeBatch(db);
     related.docs.slice(offset, offset + 450).forEach(item => batch.delete(item.ref));
     await batch.commit();
   }
-  await deleteDoc(doc(db, "subjects", id));
+  const batch = writeBatch(db);
+  slots.docs.forEach(item => batch.delete(item.ref));
+  batch.delete(doc(db, "subjects", id));
+  await batch.commit();
 }
 
-export async function createActivity(input: ActivityInput): Promise<string> {
+export async function createActivity(input: ActivityInput, activityId?: string): Promise<string> {
   const db = requireFirestore();
   const subject = await getDoc(doc(db, "subjects", input.subjectId));
   if (!subject.exists()) throw new Error("Matéria não encontrada.");
+  const reference = activityId ? doc(db, "activities", activityId) : doc(collection(db, "activities"));
+  if (activityId && (await getDoc(reference)).exists()) throw new Error("Este identificador de atividade já existe. Feche o formulário e tente novamente.");
   const now = serverTimestamp();
-  const reference = await addDoc(collection(db, "activities"), {
+  await setDoc(reference, {
     ...input,
     description: input.description || null,
     resourceUrl: input.resourceUrl || null,
+    attachmentPath: input.attachmentPath || null,
+    attachmentName: input.attachmentName || null,
+    attachmentSize: input.attachmentSize ?? null,
     dueDate: input.dueDate ?? null,
     createdAt: now,
     updatedAt: now,
@@ -239,6 +320,9 @@ export async function updateActivity(id: string, input: ActivityInput): Promise<
     ...input,
     description: input.description || null,
     resourceUrl: input.resourceUrl || null,
+    attachmentPath: input.attachmentPath || null,
+    attachmentName: input.attachmentName || null,
+    attachmentSize: input.attachmentSize ?? null,
     dueDate: input.dueDate ?? null,
     updatedAt: serverTimestamp(),
   });
@@ -269,22 +353,144 @@ async function listCompletions(uid: string): Promise<Map<string, Date | null>> {
   return new Map(snapshot.docs.map(item => [item.id, asDate(item.data().completedAt)]));
 }
 
+const rankStateRef = (uid: string) => doc(requireFirestore(), "users", uid, "ranking", "state");
+const rankSettingsRef = (uid: string) => doc(requireFirestore(), "users", uid, "ranking", "settings");
+const publicRankRef = (uid: string) => doc(requireFirestore(), "leaderboard", uid);
+
+export async function getRankingState(uid: string): Promise<{ totalRP: number; rankedActivities: number }> {
+  const db = requireFirestore();
+  const [state, ledger] = await Promise.all([
+    getDoc(doc(db, "users", uid, "ranking", "state")),
+    getDocs(userCollection(uid, "rankedActivities")),
+  ]);
+  const value = state.exists() && typeof state.data().totalRP === "number" ? state.data().totalRP : 0;
+  return { totalRP: value, rankedActivities: ledger.size };
+}
+
+export async function backfillHistoricalRanking(uid: string): Promise<{ awarded: number; earnedRP: number }> {
+  const db = requireFirestore();
+  const [completions, ledger] = await Promise.all([
+    getDocs(userCollection(uid, "activityCompletions")),
+    getDocs(userCollection(uid, "rankedActivities")),
+  ]);
+  const alreadyRanked = new Set(ledger.docs.map(item => item.id));
+  let awarded = 0;
+  let earnedRP = 0;
+
+  for (const completion of completions.docs) {
+    const activityId = completion.id;
+    if (alreadyRanked.has(activityId)) continue;
+    const activityRef = doc(db, "activities", activityId);
+    const completionRef = doc(db, "users", uid, "activityCompletions", activityId);
+    const ledgerRef = doc(db, "users", uid, "rankedActivities", activityId);
+    const stateRef = rankStateRef(uid);
+    const settingsRef = rankSettingsRef(uid);
+    const publicRef = publicRankRef(uid);
+    const outcome = await runTransaction(db, async transaction => {
+      const [activity, existingCompletion, existingLedger, state, settings] = await Promise.all([
+        transaction.get(activityRef), transaction.get(completionRef), transaction.get(ledgerRef), transaction.get(stateRef), transaction.get(settingsRef),
+      ]);
+      if (!activity.exists() || !existingCompletion.exists() || existingLedger.exists()) return null;
+      const priority = (activity.data().priority ?? "media") as Priority;
+      const points = pointsForActivity(priority);
+      const totalRP = (state.exists() && typeof state.data().totalRP === "number" ? state.data().totalRP : 0) + points;
+      transaction.set(ledgerRef, { activityId, points, awardedAt: serverTimestamp() });
+      transaction.set(stateRef, { totalRP, lastActivityId: activityId, updatedAt: serverTimestamp() });
+      if (settings.exists() && settings.data().visible === true) {
+        transaction.set(publicRef, { displayName: text(settings.data().publicName, "Aluno"), totalRP, updatedAt: serverTimestamp() });
+      }
+      return points;
+    });
+    if (outcome !== null) {
+      alreadyRanked.add(activityId);
+      awarded += 1;
+      earnedRP += outcome;
+    }
+  }
+  return { awarded, earnedRP };
+}
+
+export async function getRankingSettings(uid: string): Promise<RankingSettings> {
+  const snapshot = await getDoc(rankSettingsRef(uid));
+  if (!snapshot.exists()) return { publicName: "", visible: false };
+  const data = snapshot.data();
+  return { publicName: text(data.publicName), visible: data.visible === true };
+}
+
+export async function listLeaderboard(): Promise<LeaderboardEntry[]> {
+  const snapshot = await getDocs(collection(requireFirestore(), "leaderboard"));
+  return snapshot.docs.map(item => ({
+    uid: item.id,
+    displayName: text(item.data().displayName, "Aluno"),
+    totalRP: typeof item.data().totalRP === "number" ? item.data().totalRP : 0,
+  })).sort((a, b) => b.totalRP - a.totalRP || a.displayName.localeCompare(b.displayName, "pt-BR"));
+}
+
+export async function saveRankingSettings(uid: string, settings: RankingSettings): Promise<void> {
+  const db = requireFirestore();
+  const stateRef = doc(db, "users", uid, "ranking", "state");
+  const settingsRef = doc(db, "users", uid, "ranking", "settings");
+  const publicRef = doc(db, "leaderboard", uid);
+  await runTransaction(db, async transaction => {
+    const stateSnapshot = await transaction.get(stateRef);
+    const totalRP = stateSnapshot.exists() && typeof stateSnapshot.data().totalRP === "number" ? stateSnapshot.data().totalRP : 0;
+    if (!stateSnapshot.exists()) transaction.set(stateRef, { totalRP: 0, lastActivityId: null, updatedAt: serverTimestamp() });
+    transaction.set(settingsRef, { publicName: settings.publicName.trim(), visible: settings.visible, updatedAt: serverTimestamp() });
+    if (settings.visible) transaction.set(publicRef, { displayName: settings.publicName.trim(), totalRP, updatedAt: serverTimestamp() });
+    else transaction.delete(publicRef);
+  });
+}
+
 async function newlyUnlocked(uid: string, before: Set<string>): Promise<string[]> {
   const current = await listAchievements(uid);
   return current.filter(item => item.unlocked && !before.has(item.code)).map(item => item.code);
 }
 
-export async function toggleCompletion(uid: string, activityId: string): Promise<{ completed: boolean; newlyUnlocked: string[] }> {
+export async function toggleCompletion(uid: string, activityId: string): Promise<{ completed: boolean; newlyUnlocked: string[]; earnedRP: number }> {
   const db = requireFirestore();
   const reference = doc(db, "users", uid, "activityCompletions", activityId);
-  const existing = await getDoc(reference);
   const before = new Set((await listAchievements(uid)).filter(item => item.unlocked).map(item => item.code));
-  if (existing.exists()) {
-    await deleteDoc(reference);
-    return { completed: false, newlyUnlocked: [] };
-  }
-  await setDoc(reference, { activityId, completedAt: serverTimestamp() });
-  return { completed: true, newlyUnlocked: await newlyUnlocked(uid, before) };
+  const outcome = await runTransaction(db, async transaction => {
+    const activityRef = doc(db, "activities", activityId);
+    const ledgerRef = doc(db, "users", uid, "rankedActivities", activityId);
+    const stateRef = doc(db, "users", uid, "ranking", "state");
+    const settingsRef = doc(db, "users", uid, "ranking", "settings");
+    const publicRef = doc(db, "leaderboard", uid);
+    const [completion, activity, ledger, state, settings] = await Promise.all([
+      transaction.get(reference),
+      transaction.get(activityRef),
+      transaction.get(ledgerRef),
+      transaction.get(stateRef),
+      transaction.get(settingsRef),
+    ]);
+    if (completion.exists()) {
+      transaction.delete(reference);
+      return { completed: false, earnedRP: 0 };
+    }
+    if (!activity.exists()) throw new Error("Atividade não encontrada.");
+    const totalBefore = state.exists() && typeof state.data().totalRP === "number" ? state.data().totalRP : 0;
+    const earnedRP = ledger.exists() ? 0 : pointsForActivity((activity.data().priority ?? "media") as Priority);
+    const totalAfter = totalBefore + earnedRP;
+    transaction.set(reference, { activityId, completedAt: serverTimestamp() });
+    if (!ledger.exists()) transaction.set(ledgerRef, { activityId, points: earnedRP, awardedAt: serverTimestamp() });
+    if (!state.exists() || earnedRP > 0) transaction.set(stateRef, {
+      totalRP: totalAfter,
+      lastActivityId: earnedRP > 0 ? activityId : (state.exists() ? state.data().lastActivityId ?? null : null),
+      updatedAt: serverTimestamp(),
+    });
+    if (settings.exists() && settings.data().visible === true) {
+      transaction.set(publicRef, {
+        displayName: text(settings.data().publicName, "Aluno"),
+        totalRP: totalAfter,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    return { completed: true, earnedRP };
+  });
+  return {
+    ...outcome,
+    newlyUnlocked: outcome.completed ? await newlyUnlocked(uid, before) : [],
+  };
 }
 
 export async function recordStudySession(input: {
@@ -293,6 +499,7 @@ export async function recordStudySession(input: {
   subjectId: string | null;
   activityId: string | null;
   kind?: "pomodoro" | "livre";
+  sessionId?: string;
 }): Promise<{ newlyUnlocked: string[] }> {
   const db = requireFirestore();
   let subjectId = input.subjectId;
@@ -307,14 +514,24 @@ export async function recordStudySession(input: {
 
   const before = new Set((await listAchievements(input.uid)).filter(item => item.unlocked).map(item => item.code));
   const completedAt = new Date();
-  await addDoc(userCollection(input.uid, "studySessions"), {
+  const sessionData = {
     durationMinutes: input.durationMinutes,
     subjectId,
     activityId: input.activityId,
     kind: input.kind ?? "pomodoro",
     startedAt: new Date(completedAt.getTime() - input.durationMinutes * 60_000),
     completedAt: serverTimestamp(),
-  });
+  };
+  if (input.sessionId) {
+    if (!/^[A-Za-z0-9_-]{1,120}$/.test(input.sessionId)) throw new Error("Identificador de sessão inválido.");
+    const reference = doc(requireFirestore(), "users", input.uid, "studySessions", input.sessionId);
+    await runTransaction(db, async transaction => {
+      if ((await transaction.get(reference)).exists()) return;
+      transaction.set(reference, sessionData);
+    });
+  } else {
+    await addDoc(userCollection(input.uid, "studySessions"), sessionData);
+  }
   return { newlyUnlocked: await newlyUnlocked(input.uid, before) };
 }
 
@@ -398,9 +615,14 @@ export async function listAchievements(uid: string) {
   const daysThisWeek = new Set(sessions.filter(item => item.completedAt >= weekStart).map(item => dateKey(item.completedAt))).size;
   const progress: Record<string, number> = {
     first_completion: completedCount,
+    five_completions: completedCount,
     ten_completions: completedCount,
+    twentyfive_completions: completedCount,
+    fifty_completions: completedCount,
     hundred_completions: completedCount,
+    three_day_streak: calculateStreak(sessions),
     seven_day_streak: calculateStreak(sessions),
+    five_pomodoro_sessions: sessions.filter(session => session.kind === "pomodoro").length,
     ten_pomodoro_hours: pomodoroMinutes,
     subject_mastery: hasFinishedSubject ? 1 : 0,
     five_days_week: daysThisWeek,
@@ -424,6 +646,27 @@ export async function getPlannerNote(uid: string): Promise<{ content: string }> 
 
 export async function savePlannerNote(uid: string, content: string): Promise<void> {
   await setDoc(doc(requireFirestore(), "users", uid, "planner", "quickNote"), { content, updatedAt: serverTimestamp() }, { merge: true });
+}
+
+export const defaultVisualPreferences: VisualPreferences = { accent: "lime", surface: "graphite", texture: "plain", density: "comfortable" };
+
+export async function getVisualPreferences(uid: string): Promise<VisualPreferences> {
+  const snapshot = await getDoc(doc(requireFirestore(), "users", uid, "preferences", "visual"));
+  if (!snapshot.exists()) return defaultVisualPreferences;
+  const data = snapshot.data();
+  return {
+    accent: data.accent === "indigo" || data.accent === "coral" || data.accent === "violet" ? data.accent : "lime",
+    surface: data.surface === "ink" || data.surface === "plum" ? data.surface : "graphite",
+    texture: data.texture === "grid" ? "grid" : "plain",
+    density: data.density === "compact" ? "compact" : "comfortable",
+  };
+}
+
+export async function saveVisualPreferences(uid: string, preferences: VisualPreferences): Promise<void> {
+  await setDoc(doc(requireFirestore(), "users", uid, "preferences", "visual"), {
+    ...preferences,
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
 }
 
 export function currentWeekKey(): string {
@@ -453,8 +696,10 @@ export async function saveWeeklyGoal(uid: string, targetMinutes: number, targetS
 }
 
 export async function exportUserData(uid: string): Promise<{ json: string; csv: string; fileName: string }> {
-  const [activities, sessions, achievements] = await Promise.all([listActivities(uid), listStudySessions(uid), listAchievements(uid)]);
-  const payload = { exportedAt: new Date().toISOString(), activities, studySessions: sessions, achievements };
+  const [activities, sessions, achievements, plannerNote, visualPreferences, weeklyGoal, rankingState, rankingSettings] = await Promise.all([
+    listActivities(uid), listStudySessions(uid), listAchievements(uid), getPlannerNote(uid), getVisualPreferences(uid), getWeeklyGoal(uid), getRankingState(uid), getRankingSettings(uid),
+  ]);
+  const payload = { exportedAt: new Date().toISOString(), activities, studySessions: sessions, achievements, plannerNote, visualPreferences, weeklyGoal, rankingState, rankingSettings };
   const csvRows = activities.map(item => [item.title, item.subject.name, item.dueDate ? dateKey(item.dueDate) : "", item.completed ? "sim" : "não", item.estimatedMinutes]
     .map(value => `"${String(value).replaceAll('"', '""')}"`).join(","));
   return {

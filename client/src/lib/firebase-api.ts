@@ -8,28 +8,37 @@ import {
 } from "@tanstack/react-query";
 import { useFirebaseAuth, logoutFromFirebase } from "@/contexts/FirebaseAuthContext";
 import {
+  backfillHistoricalRanking,
   createActivity,
   createSubject,
   exportUserData,
   getDashboardData,
   getPlannerNote,
+  getRankingSettings,
+  getRankingState,
   getStudyStats,
   getWeeklyGoal,
+  getVisualPreferences,
   listAchievements,
   listActivities,
+  listLeaderboard,
   listSubjects,
   recordStudySession,
   removeActivity,
   removeSubject,
   savePlannerNote,
+  saveRankingSettings,
   saveWeeklyGoal,
+  saveVisualPreferences,
   toggleCompletion,
   updateActivity,
   updateSubject,
   type ActivityInput,
   type ActivityType,
   type Priority,
+  type RankingSettings,
   type SubjectInput,
+  type VisualPreferences,
 } from "@/lib/firestore-data";
 import { queryKeys } from "@/lib/firebase-hooks";
 
@@ -134,8 +143,8 @@ export const firebaseApi = {
       },
     },
     create: {
-      useMutation(options?: MutationOptions<{ id: string }, ActivityInput>) {
-        return mutationWithOptions(async input => ({ id: await createActivity(input) }), options);
+      useMutation(options?: MutationOptions<{ id: string }, ActivityInput & { id?: string }>) {
+        return mutationWithOptions(async ({ id, ...input }) => ({ id: await createActivity(input, id) }), options);
       },
     },
     update: {
@@ -184,11 +193,11 @@ export const firebaseApi = {
       },
     },
     record: {
-      useMutation(options?: MutationOptions<Awaited<ReturnType<typeof recordStudySession>>, { durationMinutes: number; subjectId?: string | null; activityId?: string | null; kind?: "pomodoro" | "livre" }>) {
+      useMutation(options?: MutationOptions<Awaited<ReturnType<typeof recordStudySession>>, { durationMinutes: number; subjectId?: string | null; activityId?: string | null; kind?: "pomodoro" | "livre"; sessionId?: string }>) {
         const auth = useFirebaseAuth();
         return mutationWithOptions(input => {
           if (!auth.user) throw new Error("Entre na sua conta novamente.");
-          return recordStudySession({ uid: auth.user.uid, durationMinutes: input.durationMinutes, subjectId: input.subjectId ?? null, activityId: input.activityId ?? null, kind: input.kind ?? "pomodoro" });
+          return recordStudySession({ uid: auth.user.uid, durationMinutes: input.durationMinutes, subjectId: input.subjectId ?? null, activityId: input.activityId ?? null, kind: input.kind ?? "pomodoro", sessionId: input.sessionId });
         }, options);
       },
     },
@@ -199,6 +208,65 @@ export const firebaseApi = {
         const auth = useFirebaseAuth();
         const uid = auth.user?.uid ?? "";
         return queryWithOptions(queryKeys.achievements(uid), () => listAchievements(uid), { ...options, enabled: Boolean(uid) && (options?.enabled ?? true) });
+      },
+    },
+  },
+  ranking: {
+    state: {
+      useQuery(options?: QueryOptions<Awaited<ReturnType<typeof getRankingState>>>) {
+        const auth = useFirebaseAuth();
+        const uid = auth.user?.uid ?? "";
+        return queryWithOptions(queryKeys.rankingState(uid), () => getRankingState(uid), { ...options, enabled: Boolean(uid) && (options?.enabled ?? true) });
+      },
+    },
+    settings: {
+      useQuery(options?: QueryOptions<Awaited<ReturnType<typeof getRankingSettings>>>) {
+        const auth = useFirebaseAuth();
+        const uid = auth.user?.uid ?? "";
+        return queryWithOptions(queryKeys.rankingSettings(uid), () => getRankingSettings(uid), { ...options, enabled: Boolean(uid) && (options?.enabled ?? true) });
+      },
+    },
+    leaderboard: {
+      useQuery(options?: QueryOptions<Awaited<ReturnType<typeof listLeaderboard>>>) {
+        return queryWithOptions(queryKeys.leaderboard, listLeaderboard, options);
+      },
+    },
+    saveSettings: {
+      useMutation(options?: MutationOptions<{ success: true }, RankingSettings>) {
+        const auth = useFirebaseAuth();
+        return mutationWithOptions(async settings => {
+          if (!auth.user) throw new Error("Entre na sua conta novamente.");
+          await saveRankingSettings(auth.user.uid, settings);
+          return { success: true as const };
+        }, options);
+      },
+    },
+    backfill: {
+      useMutation(options?: MutationOptions<Awaited<ReturnType<typeof backfillHistoricalRanking>>, void>) {
+        const auth = useFirebaseAuth();
+        return mutationWithOptions(async () => {
+          if (!auth.user) throw new Error("Entre na sua conta novamente.");
+          return backfillHistoricalRanking(auth.user.uid);
+        }, options);
+      },
+    },
+  },
+  appearance: {
+    preferences: {
+      useQuery(options?: QueryOptions<Awaited<ReturnType<typeof getVisualPreferences>>>) {
+        const auth = useFirebaseAuth();
+        const uid = auth.user?.uid ?? "";
+        return queryWithOptions(queryKeys.visualPreferences(uid), () => getVisualPreferences(uid), { ...options, enabled: Boolean(uid) && (options?.enabled ?? true) });
+      },
+    },
+    savePreferences: {
+      useMutation(options?: MutationOptions<{ success: true }, VisualPreferences>) {
+        const auth = useFirebaseAuth();
+        return mutationWithOptions(async preferences => {
+          if (!auth.user) throw new Error("Entre na sua conta novamente.");
+          await saveVisualPreferences(auth.user.uid, preferences);
+          return { success: true as const };
+        }, options);
       },
     },
   },
@@ -271,6 +339,12 @@ export const firebaseApi = {
       dashboard: { summary: makeQueryUtils(queryKeys.dashboard(uid)) },
       study: { stats: makeQueryUtils(queryKeys.study(uid)) },
       achievements: { list: makeQueryUtils(queryKeys.achievements(uid)) },
+      ranking: {
+        state: makeQueryUtils(queryKeys.rankingState(uid)),
+        settings: makeQueryUtils(queryKeys.rankingSettings(uid)),
+        leaderboard: makeQueryUtils(queryKeys.leaderboard),
+      },
+      appearance: { preferences: makeQueryUtils(queryKeys.visualPreferences(uid)) },
       planner: { note: makeQueryUtils(queryKeys.plannerNote(uid)), goal: makeQueryUtils(queryKeys.weeklyGoal(uid)) },
     };
   },

@@ -8,11 +8,19 @@ O runtime usa Cloud Firestore, não SQL. As regras completas estão em `firestor
 | --- | --- | --- |
 | `users/{uid}` | `uid`, `name`, `email`, `role`, timestamps | UID é igual ao Firebase Auth UID; `role` é `student` ou `admin` |
 | `subjects/{id}` | `name`, `color`, `teacher`, `schedule`, `description`, timestamps | Catálogo comum da turma; CRUD somente admin |
-| `activities/{id}` | `subjectId`, `title`, `description`, `type`, `priority`, `status`, `dueDate`, `resourceUrl`, `estimatedMinutes`, timestamps | `subjectId` referencia `subjects/{id}` |
+| `activities/{id}` | `subjectId`, `title`, `description`, `type`, `priority`, `status`, `dueDate`, `resourceUrl`, `estimatedMinutes`, `attachmentPath?`, `attachmentName?`, `attachmentSize?`, timestamps | `subjectId` referencia `subjects/{id}`; o PDF fica no Blob privado, não no Firestore |
 | `users/{uid}/activityCompletions/{activityId}` | `activityId`, `completedAt` | Um documento por atividade e aluno; desmarcar apaga o documento |
 | `users/{uid}/studySessions/{sessionId}` | `durationMinutes`, `subjectId?`, `activityId?`, `kind`, `startedAt`, `completedAt` | Registros são imutáveis no cliente depois de criados |
 | `users/{uid}/planner/quickNote` | `content`, `updatedAt` | Nota pessoal, documento fixo |
 | `users/{uid}/weeklyGoals/{weekStart}` | `weekStart`, `targetMinutes`, `targetSessions`, `updatedAt` | Uma meta por semana ISO/local do app |
+| `subjectSchedule/{slotId}` | `subjectId`, `day` (1–5), `startTime`, `endTime`, `room?`, timestamps | Bloco da planilha semanal; leitura autenticada, CRUD admin |
+| `users/{uid}/preferences/visual` | `accent`, `surface`, `texture`, `density`, `updatedAt` | Personalização escura privada |
+| `users/{uid}/ranking/state` | `totalRP`, `rankedActivities`, `lastActivityId`, `updatedAt` | Progresso rankeado privado da conta |
+| `users/{uid}/ranking/settings` | `publicName`, `visible`, `updatedAt` | Opt-in e apelido escolhido pelo aluno |
+| `users/{uid}/rankedActivities/{activityId}` | `activityId`, `points`, `awardedAt` | Ledger imutável para evitar pontos duplicados |
+| `leaderboard/{uid}` | `displayName`, `totalRP`, `updatedAt` | Índice público mínimo; gravado apenas se `visible=true` |
+
+Os bytes dos PDFs são gravados como blobs **privados** sob `2b-private/{adminUid}/{activityId}/...pdf`. `api/blob.ts` valida Firebase Auth, reserva upload apenas para admin, valida o caminho do anexo no Firestore em cada download e transmite o conteúdo privado. Tamanho máximo: 10 MiB; tipos aceitos: `application/pdf`. Não persistir URLs assinadas como caminho permanente; salvar somente o pathname, o nome e o tamanho no documento da atividade.
 
 O catálogo inicial de conquistas é definido no cliente. O desbloqueio e o progresso são calculados com atividades concluídas e sessões daquele próprio UID; não há coleção pública de badges gravável pelo browser.
 

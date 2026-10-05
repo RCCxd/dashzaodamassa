@@ -17,6 +17,10 @@ export const queryKeys = {
   achievements: (uid: string) => ["firebase", "achievements", uid] as const,
   plannerNote: (uid: string) => ["firebase", "planner-note", uid] as const,
   weeklyGoal: (uid: string) => ["firebase", "weekly-goal", uid] as const,
+  rankingState: (uid: string) => ["firebase", "ranking-state", uid] as const,
+  rankingSettings: (uid: string) => ["firebase", "ranking-settings", uid] as const,
+  leaderboard: ["firebase", "leaderboard"] as const,
+  visualPreferences: (uid: string) => ["firebase", "visual-preferences", uid] as const,
 };
 
 function requireUid(uid: string | null | undefined): string {

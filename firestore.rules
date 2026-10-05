@@ -9,7 +9,7 @@ service cloud.firestore {
     // Substitua o marcador pelo UID da conta administrativa criada no Console Firebase.
     // Se esquecer, nenhum usuário terá permissão administrativa.
     function isAdmin() {
-      return signedIn() && request.auth.uid == "OnUYUaC8B8Nnpkh679DWAspK7392";
+      return signedIn() && request.auth.uid == "REPLACE_WITH_ADMIN_UID";
     }
 
     function owns(uid) {
@@ -43,7 +43,7 @@ service cloud.firestore {
     }
 
     function validActivity() {
-      return request.resource.data.keys().hasOnly(["subjectId", "title", "description", "type", "priority", "status", "dueDate", "resourceUrl", "estimatedMinutes", "createdAt", "updatedAt"])
+      return request.resource.data.keys().hasOnly(["subjectId", "title", "description", "type", "priority", "status", "dueDate", "resourceUrl", "attachmentPath", "attachmentName", "attachmentSize", "estimatedMinutes", "createdAt", "updatedAt"])
         && request.resource.data.subjectId is string
         && request.resource.data.title is string
         && request.resource.data.title.size() >= 1
@@ -54,9 +54,113 @@ service cloud.firestore {
         && request.resource.data.status in ["pendente", "em_andamento", "concluida"]
         && (request.resource.data.dueDate == null || request.resource.data.dueDate is timestamp)
         && isOptionalString(request.resource.data.resourceUrl, 2048)
+        && isOptionalString(request.resource.data.attachmentPath, 512)
+        && isOptionalString(request.resource.data.attachmentName, 180)
+        && (request.resource.data.attachmentSize == null || (request.resource.data.attachmentSize is int && request.resource.data.attachmentSize >= 1 && request.resource.data.attachmentSize <= 10485760))
         && request.resource.data.estimatedMinutes is int
         && request.resource.data.estimatedMinutes >= 1
         && request.resource.data.estimatedMinutes <= 1440;
+    }
+
+    function activityPoints(priority) {
+      return 10 + (priority == "alta" ? 5 : priority == "media" ? 2 : 0);
+    }
+
+    function validScheduleSlot() {
+      return request.resource.data.keys().hasOnly(["subjectId", "day", "startTime", "endTime", "room", "createdAt", "updatedAt"])
+        && request.resource.data.keys().hasAll(["subjectId", "day", "startTime", "endTime", "room", "createdAt", "updatedAt"])
+        && request.resource.data.subjectId is string
+        && existsAfter(/databases/$(database)/documents/subjects/$(request.resource.data.subjectId))
+        && request.resource.data.day is int
+        && request.resource.data.day >= 1
+        && request.resource.data.day <= 5
+        && request.resource.data.startTime is string
+        && request.resource.data.startTime.matches("^([01][0-9]|2[0-3]):[0-5][0-9]$")
+        && request.resource.data.endTime is string
+        && request.resource.data.endTime.matches("^([01][0-9]|2[0-3]):[0-5][0-9]$")
+        && request.resource.data.startTime < request.resource.data.endTime
+        && isOptionalString(request.resource.data.room, 80)
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt == request.time;
+    }
+
+    function validRankState(uid) {
+      let activityId = request.resource.data.lastActivityId;
+      let statePath = /databases/$(database)/documents/users/$(uid)/ranking/state;
+      let ledgerPath = /databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId);
+      let completionPath = /databases/$(database)/documents/users/$(uid)/activityCompletions/$(activityId);
+      let activityPath = /databases/$(database)/documents/activities/$(activityId);
+      return request.resource.data.keys().hasOnly(["totalRP", "lastActivityId", "updatedAt"])
+        && request.resource.data.keys().hasAll(["totalRP", "lastActivityId", "updatedAt"])
+        && request.resource.data.totalRP is int
+        && request.resource.data.totalRP >= 0
+        && request.resource.data.updatedAt == request.time
+        && ((activityId == null && request.resource.data.totalRP == 0 && !exists(statePath))
+          || (activityId is string
+            && exists(activityPath)
+            && !exists(ledgerPath)
+            && existsAfter(ledgerPath)
+            && getAfter(ledgerPath).data.points == activityPoints(get(activityPath).data.priority)
+            && existsAfter(completionPath)
+            && (exists(completionPath)
+              ? get(completionPath).data.activityId == activityId && get(completionPath).data.completedAt is timestamp
+              : getAfter(completionPath).data.completedAt == request.time)
+            && request.resource.data.totalRP == (exists(statePath) ? get(statePath).data.totalRP : 0) + getAfter(ledgerPath).data.points));
+    }
+
+    function validRankSettings(uid) {
+      let statePath = /databases/$(database)/documents/users/$(uid)/ranking/state;
+      let publicPath = /databases/$(database)/documents/leaderboard/$(uid);
+      return request.resource.data.keys().hasOnly(["publicName", "visible", "updatedAt"])
+        && request.resource.data.keys().hasAll(["publicName", "visible", "updatedAt"])
+        && request.resource.data.publicName is string
+        && request.resource.data.publicName.size() >= 2
+        && request.resource.data.publicName.size() <= 32
+        && request.resource.data.visible is bool
+        && request.resource.data.updatedAt == request.time
+        && existsAfter(statePath)
+        && (request.resource.data.visible
+          ? existsAfter(publicPath)
+            && getAfter(publicPath).data.displayName == request.resource.data.publicName
+            && getAfter(publicPath).data.totalRP == getAfter(statePath).data.totalRP
+          : !existsAfter(publicPath));
+    }
+
+    function validPublicRank(uid) {
+      let settingsPath = /databases/$(database)/documents/users/$(uid)/ranking/settings;
+      let statePath = /databases/$(database)/documents/users/$(uid)/ranking/state;
+      return request.resource.data.keys().hasOnly(["displayName", "totalRP", "updatedAt"])
+        && request.resource.data.keys().hasAll(["displayName", "totalRP", "updatedAt"])
+        && request.resource.data.displayName is string
+        && request.resource.data.totalRP is int
+        && request.resource.data.totalRP >= 0
+        && request.resource.data.updatedAt == request.time
+        && existsAfter(settingsPath)
+        && getAfter(settingsPath).data.visible == true
+        && request.resource.data.displayName == getAfter(settingsPath).data.publicName
+        && existsAfter(statePath)
+        && request.resource.data.totalRP == getAfter(statePath).data.totalRP;
+    }
+
+    function validRankLedger(uid, activityId) {
+      let activityPath = /databases/$(database)/documents/activities/$(activityId);
+      let ledgerPath = /databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId);
+      let completionPath = /databases/$(database)/documents/users/$(uid)/activityCompletions/$(activityId);
+      let statePath = /databases/$(database)/documents/users/$(uid)/ranking/state;
+      return request.resource.data.keys().hasOnly(["activityId", "points", "awardedAt"])
+        && request.resource.data.keys().hasAll(["activityId", "points", "awardedAt"])
+        && request.resource.data.activityId == activityId
+        && exists(activityPath)
+        && request.resource.data.points == activityPoints(get(activityPath).data.priority)
+        && request.resource.data.awardedAt == request.time
+        && !exists(ledgerPath)
+        && existsAfter(completionPath)
+        && (exists(completionPath)
+          ? get(completionPath).data.activityId == activityId && get(completionPath).data.completedAt is timestamp
+          : getAfter(completionPath).data.completedAt == request.time)
+        && existsAfter(statePath)
+        && getAfter(statePath).data.lastActivityId == activityId
+        && getAfter(statePath).data.totalRP == (exists(statePath) ? get(statePath).data.totalRP : 0) + request.resource.data.points;
     }
 
     match /users/{uid} {
@@ -76,7 +180,11 @@ service cloud.firestore {
         allow create: if owns(uid)
           && request.resource.data.keys().hasOnly(["activityId", "completedAt"])
           && request.resource.data.activityId == activityId
-          && request.resource.data.completedAt == request.time;
+          && request.resource.data.completedAt == request.time
+          && exists(/databases/$(database)/documents/activities/$(activityId))
+          && (exists(/databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId))
+            || (existsAfter(/databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId))
+              && getAfter(/databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId)).data.activityId == activityId));
         allow update: if false;
         allow delete: if owns(uid);
       }
@@ -122,6 +230,42 @@ service cloud.firestore {
           && request.resource.data.updatedAt == request.time;
         allow delete: if owns(uid);
       }
+
+      match /preferences/{preferenceId} {
+        allow read: if owns(uid);
+        allow create, update: if owns(uid)
+          && preferenceId == "visual"
+          && request.resource.data.keys().hasOnly(["accent", "surface", "texture", "density", "updatedAt"])
+          && request.resource.data.keys().hasAll(["accent", "surface", "texture", "density", "updatedAt"])
+          && request.resource.data.accent in ["lime", "indigo", "coral", "violet"]
+          && request.resource.data.surface in ["graphite", "ink", "plum"]
+          && request.resource.data.texture in ["plain", "grid"]
+          && request.resource.data.density in ["comfortable", "compact"]
+          && request.resource.data.updatedAt == request.time;
+        allow delete: if false;
+      }
+
+      match /ranking/{rankingDocument} {
+        allow read: if owns(uid);
+        allow create, update: if owns(uid)
+          && rankingDocument == "state"
+          && validRankState(uid);
+        allow delete: if false;
+      }
+
+      match /ranking/{rankingDocument} {
+        allow read: if owns(uid);
+        allow create, update: if owns(uid)
+          && rankingDocument == "settings"
+          && validRankSettings(uid);
+        allow delete: if false;
+      }
+
+      match /rankedActivities/{activityId} {
+        allow read: if owns(uid);
+        allow create: if owns(uid) && validRankLedger(uid, activityId);
+        allow update, delete: if false;
+      }
     }
 
     match /subjects/{subjectId} {
@@ -134,6 +278,20 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create, update: if isAdmin() && validActivity();
       allow delete: if isAdmin();
+    }
+
+    match /subjectSchedule/{slotId} {
+      allow read: if signedIn();
+      allow create, update: if isAdmin() && validScheduleSlot();
+      allow delete: if isAdmin();
+    }
+
+    match /leaderboard/{uid} {
+      allow read: if signedIn();
+      allow create, update: if owns(uid) && validPublicRank(uid);
+      allow delete: if owns(uid)
+        && existsAfter(/databases/$(database)/documents/users/$(uid)/ranking/settings)
+        && getAfter(/databases/$(database)/documents/users/$(uid)/ranking/settings).data.visible == false;
     }
 
     // The client does not trust achievement writes; achievements are derived from a user's own records.
