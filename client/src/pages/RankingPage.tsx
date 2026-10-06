@@ -119,6 +119,6 @@ export default function RankingPage() {
         </ol> : <div className="grid min-h-52 place-items-center p-8 text-center"><div><Medal className="mx-auto size-8 text-brand" /><h3 className="mt-3 font-editorial text-xl">O placar está em branco — por enquanto.</h3><p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">Quando os alunos ativarem a exibição e concluírem atividades, as divisões aparecem aqui.</p></div></div>}
       {position >= 0 && <p className="border-t border-border px-5 py-3 font-mono text-xs text-muted-foreground sm:px-6">Sua posição atual: #{position + 1} de {leaderboardRows.length} · {rankState.totalRP} RP</p>}
     </section>
-    <p className="text-xs leading-5 text-muted-foreground">Cada divisão pede 50 RP. Base por prioridade: baixa 10 · média 12 · alta 15. Bônus por tipo: tarefa +0 · prova +5 · trabalho +3 · projeto +4. Desmarcar uma atividade reverte os RP daquela conclusão; marcar novamente concede os pontos uma única vez. Pomodoro, sessões livres e tempo de foco não dão RP, e prazos não geram multas.</p>
+    <p className="text-xs leading-5 text-muted-foreground">Cada divisão pede 50 RP. Base por prioridade: baixa 10 · média 12 · alta 15. Bônus por tipo: tarefa +0 · prova +5 · trabalho +3 · projeto +4. Reabrir uma atividade reverte os RP daquela conclusão. Após o fim do dia do prazo (12 horas depois da data salva), uma atividade pendente perde até 5 RP uma única vez, limitada ao saldo; concluir depois não devolve a multa. Pomodoro, sessões livres e tempo de foco não dão RP.</p>
   </div>;
 }

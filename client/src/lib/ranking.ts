@@ -15,6 +15,21 @@ const RANK_GROUPS = [
 export const RP_PER_DIVISION = 50;
 export const RADIANT_START_RP = RANK_GROUPS.length * DIVISIONS.length * RP_PER_DIVISION;
 const TYPE_BONUS: Record<ActivityType, number> = { tarefa: 0, prova: 5, trabalho: 3, projeto: 4 };
+export const LATE_PENALTY_RP = 5;
+export const DUE_DATE_GRACE_HOURS = 12;
+
+export function latePenaltyLoss(totalRP: number): number {
+  const balance = Math.max(0, Math.trunc(Number.isFinite(totalRP) ? totalRP : 0));
+  return Math.min(LATE_PENALTY_RP, balance);
+}
+
+export function deadlineAtEndOfDueDate(dueDate: Date): Date {
+  return new Date(dueDate.getTime() + DUE_DATE_GRACE_HOURS * 60 * 60 * 1000);
+}
+
+export function isPastDueDate(dueDate: Date | null, now = new Date()): boolean {
+  return dueDate !== null && now.getTime() > deadlineAtEndOfDueDate(dueDate).getTime();
+}
 
 export type ValorantRank = {
   label: string;

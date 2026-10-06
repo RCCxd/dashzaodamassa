@@ -8,7 +8,6 @@ import {
 } from "@tanstack/react-query";
 import { useFirebaseAuth, logoutFromFirebase } from "@/contexts/FirebaseAuthContext";
 import {
-  backfillHistoricalRanking,
   archiveActivity,
   archiveSubject,
   createActivity,
@@ -26,6 +25,8 @@ import {
   listLeaderboard,
   listSubjects,
   recordStudySession,
+  reconcileLatePenalties,
+  reconcileRanking,
   savePlannerNote,
   saveRankingSettings,
   saveWeeklyGoal,
@@ -41,6 +42,7 @@ import {
   type VisualPreferences,
 } from "@/lib/firestore-data";
 import { queryKeys } from "@/lib/firebase-hooks";
+import { isPastDueDate } from "@/lib/ranking";
 
 export type ActivityFilters = {
   search?: string;
@@ -52,6 +54,7 @@ export type ActivityFilters = {
 
 type QueryOptions<T> = Omit<UseQueryOptions<T, Error, T, QueryKey>, "queryKey" | "queryFn">;
 type MutationOptions<TData, TVariables> = UseMutationOptions<TData, Error, TVariables, unknown>;
+type CompletionResult = Awaited<ReturnType<typeof toggleCompletion>> & { latePenaltyCount: number; lateLostRP: number };
 
 function keyWithInput(base: readonly unknown[], input: unknown) {
   return [...base, input ?? {}] as const;
@@ -80,11 +83,7 @@ function filteredActivities(uid: string, input?: ActivityFilters) {
     if (input?.priority) result = result.filter(item => item.priority === input.priority);
     if (input?.state === "concluidas") result = result.filter(item => item.completed);
     if (input?.state === "pendentes") result = result.filter(item => !item.completed);
-    if (input?.state === "atrasadas") {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      result = result.filter(item => !item.completed && Boolean(item.dueDate && item.dueDate < today));
-    }
+    if (input?.state === "atrasadas") result = result.filter(item => !item.completed && item.status !== "concluida" && isPastDueDate(item.dueDate));
     return result;
   });
 }
@@ -166,11 +165,24 @@ export const firebaseApi = {
   },
   completions: {
     toggle: {
-      useMutation(options?: MutationOptions<Awaited<ReturnType<typeof toggleCompletion>>, { activityId: string }>) {
+      useMutation(options?: MutationOptions<CompletionResult, { activityId: string }>) {
         const auth = useFirebaseAuth();
+        const queryClient = useQueryClient();
         return mutationWithOptions(input => {
           if (!auth.user) throw new Error("Entre na sua conta novamente.");
-          return toggleCompletion(auth.user.uid, input.activityId);
+          const uid = auth.user.uid;
+          return (async () => {
+            const late = auth.profile?.role === "student"
+              ? await reconcileLatePenalties(uid)
+              : { penaltyCount: 0, lostRP: 0, nextPenaltyAt: null };
+            if (late.penaltyCount) {
+              await Promise.all([
+                queryClient.invalidateQueries({ queryKey: queryKeys.rankingState(uid) }),
+                queryClient.invalidateQueries({ queryKey: queryKeys.leaderboard }),
+              ]);
+            }
+            return { ...await toggleCompletion(uid, input.activityId), latePenaltyCount: late.penaltyCount, lateLostRP: late.lostRP };
+          })();
         }, options);
       },
     },
@@ -242,11 +254,11 @@ export const firebaseApi = {
       },
     },
     backfill: {
-      useMutation(options?: MutationOptions<Awaited<ReturnType<typeof backfillHistoricalRanking>>, void>) {
+      useMutation(options?: MutationOptions<Awaited<ReturnType<typeof reconcileRanking>>, void>) {
         const auth = useFirebaseAuth();
         return mutationWithOptions(async () => {
           if (!auth.user) throw new Error("Entre na sua conta novamente.");
-          return backfillHistoricalRanking(auth.user.uid);
+          return reconcileRanking(auth.user.uid, auth.profile?.role === "student");
         }, options);
       },
     },

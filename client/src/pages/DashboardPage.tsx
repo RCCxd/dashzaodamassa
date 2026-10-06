@@ -2,7 +2,7 @@ import { MetricCard } from "@/components/dashboard/MetricCard";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { firebaseApi } from "@/lib/firebase-api";
-import { resolveValorantRank } from "@/lib/ranking";
+import { isPastDueDate, resolveValorantRank } from "@/lib/ranking";
 import { format, formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { AlertTriangle, ArrowRight, CheckCircle2, CircleDashed, Clock3, FileText, ListTodo, Medal, NotebookPen, TrendingUp } from "lucide-react";
@@ -36,7 +36,7 @@ export default function DashboardPage() {
       <article className="editorial-panel p-0">
         <div className="flex items-end justify-between gap-3 border-b border-border px-5 py-4"><div><p className="eyebrow">Prazos em movimento</p><h2 className="mt-1 font-editorial text-2xl">Próximas atividades</h2></div><Link href="/activities" className="text-xs font-bold text-brand underline-offset-4 hover:underline">Ver todas <ArrowRight className="inline size-3.5" /></Link></div>
         {data.upcoming.length ? <div className="divide-y divide-border">{data.upcoming.map(item => {
-          const late = Boolean(item.dueDate && item.dueDate < new Date());
+          const late = item.status !== "concluida" && isPastDueDate(item.dueDate);
           return <div className="flex items-center gap-3 px-5 py-4" key={item.id}><span className="h-10 w-[3px] shrink-0 rounded-full" style={{ background: late ? "#d95463" : item.subject.color }} /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="truncate text-sm font-semibold">{item.title}</p><span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{item.priority}</span>{item.attachmentPath && <FileText className="size-3.5 text-brand" aria-label="Tem PDF anexado" />}</div><p className="mt-1 text-xs text-muted-foreground">{item.subject.name} · {item.estimatedMinutes} min</p></div><div className="text-right"><p className={`text-xs font-bold ${late ? "text-rose-300" : "text-foreground"}`}>{item.dueDate && formatDistanceToNow(item.dueDate, { addSuffix: true, locale: ptBR })}</p><p className="mt-1 font-mono text-[10px] text-muted-foreground">{item.dueDate && format(item.dueDate, "dd MMM", { locale: ptBR })}</p></div></div>;
         })}</div> : <div className="grid min-h-44 place-items-center p-6 text-center"><div><CheckCircle2 className="mx-auto size-8 text-brand" /><p className="mt-3 text-sm font-semibold">Seu quadro está livre.</p><p className="mt-1 text-xs text-muted-foreground">Quando houver novos prazos, eles aparecem aqui.</p></div></div>}
       </article>

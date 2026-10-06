@@ -5,6 +5,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { firebaseApi } from "@/lib/firebase-api";
 import { deleteTaskPdf, downloadTaskPdf, uploadTaskPdf } from "@/lib/blob-client";
 import type { Activity, ActivityInput, ActivityType, EditorialStatus, Priority } from "@/lib/firestore-data";
+import { isPastDueDate } from "@/lib/ranking";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { Archive, Check, Circle, Download, ExternalLink, FileText, Filter, Pencil, Plus, Search, Upload, X } from "lucide-react";
@@ -68,6 +69,11 @@ export default function ActivitiesPage() {
       toast.success(result.completed
         ? `Atividade concluída · +${result.earnedRP} RP${result.lostRP ? ` (correção de saldo anterior: −${result.lostRP} RP)` : ""}.`
         : result.lostRP ? `Atividade reaberta · −${result.lostRP} RP.` : "Atividade reaberta.");
+      if (result.latePenaltyCount) {
+        toast.warning(result.lateLostRP
+          ? `Multa por atraso: −${result.lateLostRP} RP em ${result.latePenaltyCount} atividade${result.latePenaltyCount === 1 ? "" : "s"}.`
+          : `Multa por atraso registrada em ${result.latePenaltyCount} atividade${result.latePenaltyCount === 1 ? "" : "s"}; seu saldo já estava em 0 RP.`);
+      }
       if (result.newlyUnlocked.length) toast.success("Nova conquista desbloqueada!");
     },
   });
@@ -155,7 +161,7 @@ export default function ActivitiesPage() {
     void downloadTaskPdf(activity.attachmentPath, activity.id, activity.attachmentName ?? "atividade.pdf").catch(error => toast.error(error instanceof Error ? error.message : "Não foi possível abrir o PDF."));
   };
 
-  const counts = useMemo(() => ({ total: rows.length, overdue: rows.filter(item => !item.completed && item.dueDate && item.dueDate < new Date()).length }), [rows]);
+  const counts = useMemo(() => ({ total: rows.length, overdue: rows.filter(item => !item.completed && item.status !== "concluida" && !item.archived && !item.subject.archived && isPastDueDate(item.dueDate)).length }), [rows]);
 
   return <div className="editorial-page space-y-7">
     <header className="editorial-heading flex flex-col justify-between gap-4 md:flex-row md:items-end">
@@ -176,9 +182,10 @@ export default function ActivitiesPage() {
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-5 py-3"><p className="eyebrow">Quadro de tarefas <span aria-hidden="true">/</span> compartilhado pela turma</p><p className="font-mono text-[10px] text-muted-foreground">{counts.overdue ? `${counts.overdue} em atraso` : "sem urgências críticas"}</p></div>
       {activities.isLoading ? <div className="space-y-3 p-5">{[1, 2, 3].map(item => <div key={item} className="h-20 animate-pulse rounded-lg bg-muted" />)}</div>
         : rows.length ? <div className="divide-y divide-border">{rows.map(activity => {
-          const overdue = !activity.completed && Boolean(activity.dueDate && activity.dueDate < new Date());
+          const overdue = !activity.completed && activity.status !== "concluida" && isPastDueDate(activity.dueDate);
+          const closedByAdmin = !activity.completed && activity.status === "concluida";
           return <article key={activity.id} className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:gap-4 sm:px-5">
-            <button type="button" onClick={() => toggle.mutate({ activityId: activity.id })} disabled={toggle.isPending} className={`grid size-7 shrink-0 place-items-center rounded-full border-2 transition ${activity.completed ? "border-brand bg-brand text-brand-foreground" : "border-muted-foreground/40 text-transparent hover:border-brand"}`} aria-label={activity.completed ? `Reabrir ${activity.title}` : `Concluir ${activity.title}`}>{activity.completed ? <Check className="size-4" /> : <Circle className="size-3" />}</button>
+            <button type="button" onClick={() => toggle.mutate({ activityId: activity.id })} disabled={toggle.isPending || closedByAdmin} title={closedByAdmin ? "Encerrada pelo administrador; não pode ser concluída." : undefined} className={`grid size-7 shrink-0 place-items-center rounded-full border-2 transition disabled:cursor-not-allowed disabled:opacity-40 ${activity.completed ? "border-brand bg-brand text-brand-foreground" : "border-muted-foreground/40 text-transparent hover:border-brand"}`} aria-label={closedByAdmin ? `${activity.title} foi encerrada pelo administrador` : activity.completed ? `Reabrir ${activity.title}` : `Concluir ${activity.title}`}>{activity.completed ? <Check className="size-4" /> : <Circle className="size-3" />}</button>
             <span className="hidden h-9 w-[3px] shrink-0 rounded-full sm:block" style={{ background: activity.subject.color }} />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2"><h2 className={`font-semibold ${activity.completed ? "text-muted-foreground line-through" : ""}`}>{activity.title}</h2><span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">{activity.type}</span><PriorityTag priority={activity.priority} />{(activity.archived || activity.subject.archived) && <span className="inline-flex items-center gap-1 rounded-full bg-amber-200/10 px-2 py-0.5 text-[10px] font-bold text-amber-100"><Archive className="size-3" />Arquivada</span>}{activity.attachmentPath && <span className="inline-flex items-center gap-1 rounded-full bg-brand/10 px-2 py-0.5 text-[10px] font-bold text-brand"><FileText className="size-3" />PDF</span>}</div>

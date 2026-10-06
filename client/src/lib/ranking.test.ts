@@ -1,7 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { pointsForActivity, progressToNextRank, resolveValorantRank } from "./ranking";
+import { deadlineAtEndOfDueDate, isPastDueDate, latePenaltyLoss, LATE_PENALTY_RP, pointsForActivity, progressToNextRank, resolveValorantRank } from "./ranking";
 
 describe("Valorant-style ranking", () => {
+  it("deduz cinco RP uma única vez após o fim local do prazo", () => {
+    const dueDate = new Date("2026-10-05T12:00:00.000Z");
+    const deadline = deadlineAtEndOfDueDate(dueDate);
+    expect(LATE_PENALTY_RP).toBe(5);
+    expect(deadline.toISOString()).toBe("2026-10-06T00:00:00.000Z");
+    expect(isPastDueDate(dueDate, new Date(deadline.getTime() - 1))).toBe(false);
+    expect(isPastDueDate(dueDate, new Date(deadline.getTime() + 1))).toBe(true);
+    expect(isPastDueDate(null, new Date("2026-10-07T00:00:00.000Z"))).toBe(false);
+    expect(latePenaltyLoss(32)).toBe(5);
+    expect(latePenaltyLoss(2)).toBe(2);
+    expect(latePenaltyLoss(0)).toBe(0);
+    expect(latePenaltyLoss(-3)).toBe(0);
+  });
+
   it("combina prioridade e tipo de atividade em fontes de RP distintas", () => {
     expect(pointsForActivity("baixa")).toBe(10);
     expect(pointsForActivity("media")).toBe(12);

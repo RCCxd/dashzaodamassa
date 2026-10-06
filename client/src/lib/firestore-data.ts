@@ -20,7 +20,7 @@ import {
   type Unsubscribe,
 } from "firebase/firestore";
 import { requireFirestore } from "@/lib/firebase";
-import { pointsForActivity } from "@/lib/ranking";
+import { deadlineAtEndOfDueDate, isPastDueDate, latePenaltyLoss, LATE_PENALTY_RP, pointsForActivity } from "@/lib/ranking";
 
 export type ActivityType = "tarefa" | "prova" | "trabalho" | "projeto";
 export type Priority = "baixa" | "media" | "alta";
@@ -89,6 +89,7 @@ export type VisualPreferences = {
 };
 export type RankingSettings = { publicName: string; visible: boolean };
 export type LeaderboardEntry = { uid: string; displayName: string; totalRP: number };
+export type LatePenaltySummary = { penaltyCount: number; lostRP: number; nextPenaltyAt: Date | null };
 
 const achievementCatalog = [
   { code: "first_completion", title: "Primeiro passo", description: "Conclua sua primeira atividade.", icon: "Sparkles", target: 1, category: "atividades" },
@@ -449,6 +450,98 @@ export async function backfillHistoricalRanking(uid: string): Promise<{ awarded:
   return { awarded, earnedRP, reversed, lostRP };
 }
 
+export async function reconcileLatePenalties(uid: string): Promise<LatePenaltySummary> {
+  const db = requireFirestore();
+  const [activities, existingPenalties] = await Promise.all([
+    listActivities(uid),
+    getDocs(userCollection(uid, "latePenalties")),
+  ]);
+  const penalizedIds = new Set(existingPenalties.docs.map(item => item.id));
+  let penaltyCount = 0;
+  let lostRP = 0;
+
+  for (const activity of activities) {
+    const completedAfterDeadline = Boolean(activity.completed && activity.completedAt && activity.dueDate && isPastDueDate(activity.dueDate, activity.completedAt));
+    if (activity.archived || activity.subject.archived || activity.status === "concluida" || !activity.dueDate || penalizedIds.has(activity.id)
+      || (activity.completed ? !completedAfterDeadline : !isPastDueDate(activity.dueDate))) continue;
+
+    const activityRef = doc(db, "activities", activity.id);
+    const subjectRef = doc(db, "subjects", activity.subjectId);
+    const completionRef = doc(db, "users", uid, "activityCompletions", activity.id);
+    const penaltyRef = doc(db, "users", uid, "latePenalties", activity.id);
+    const stateRef = rankStateRef(uid);
+    const settingsRef = rankSettingsRef(uid);
+    const publicRef = publicRankRef(uid);
+    const result = await runTransaction(db, async transaction => {
+      const [activitySnapshot, subjectSnapshot, completionSnapshot, penaltySnapshot, stateSnapshot, settingsSnapshot] = await Promise.all([
+        transaction.get(activityRef), transaction.get(subjectRef), transaction.get(completionRef), transaction.get(penaltyRef),
+        transaction.get(stateRef), transaction.get(settingsRef),
+      ]);
+      if (!activitySnapshot.exists() || !subjectSnapshot.exists() || penaltySnapshot.exists()) return null;
+      const activityData = activitySnapshot.data();
+      if (activityData.archived === true || activityData.status === "concluida" || subjectSnapshot.data().archived === true) return null;
+      const dueDate = asDate(activityData.dueDate);
+      const completedAt = completionSnapshot.exists() ? asDate(completionSnapshot.data().completedAt) : null;
+      const completionWasLate = Boolean(completionSnapshot.exists() && completedAt && dueDate && isPastDueDate(dueDate, completedAt));
+      if (!dueDate || (completionSnapshot.exists() ? !completionWasLate : !isPastDueDate(dueDate))) return null;
+
+      const oldTotal = stateSnapshot.exists() && typeof stateSnapshot.data().totalRP === "number" ? stateSnapshot.data().totalRP : 0;
+      const forfeitedRP = latePenaltyLoss(oldTotal);
+      const totalRP = Math.max(0, oldTotal - forfeitedRP);
+      const displayName = settingsSnapshot.exists() ? text(settingsSnapshot.data().publicName, "Aluno") : "Aluno";
+      transaction.set(penaltyRef, {
+        activityId: activity.id,
+        penaltyRP: LATE_PENALTY_RP,
+        lostRP: forfeitedRP,
+        dueAt: Timestamp.fromDate(deadlineAtEndOfDueDate(dueDate)),
+        penalizedAt: serverTimestamp(),
+      });
+      transaction.set(stateRef, { totalRP, lastActivityId: activity.id, updatedAt: serverTimestamp() });
+      if (settingsSnapshot.exists() && settingsSnapshot.data().visible === true) {
+        transaction.set(publicRef, { displayName, totalRP, updatedAt: serverTimestamp() });
+      }
+      return { forfeitedRP };
+    });
+    if (result) {
+      penalizedIds.add(activity.id);
+      penaltyCount += 1;
+      lostRP += result.forfeitedRP;
+    }
+  }
+
+  const [latestActivities, latestPenalties] = await Promise.all([
+    listActivities(uid),
+    getDocs(userCollection(uid, "latePenalties")),
+  ]);
+  const latestPenaltyIds = new Set(latestPenalties.docs.map(item => item.id));
+  const pendingDeadlines = latestActivities
+    .filter(activity => !activity.completed && !activity.archived && !activity.subject.archived && activity.status !== "concluida" && activity.dueDate && !latestPenaltyIds.has(activity.id))
+    .map(activity => deadlineAtEndOfDueDate(activity.dueDate!))
+    .sort((a, b) => a.getTime() - b.getTime());
+  const now = Date.now();
+  const overdueStillPending = pendingDeadlines.some(deadline => deadline.getTime() <= now);
+  const nextPenaltyAt = overdueStillPending
+    ? new Date(now + 5 * 60_000)
+    : pendingDeadlines[0] ?? null;
+  return { penaltyCount, lostRP, nextPenaltyAt };
+}
+
+const rankingBackfills = new Map<string, Promise<{ awarded: number; earnedRP: number; reversed: number; lostRP: number }>>();
+
+export async function reconcileRanking(uid: string, isStudent: boolean) {
+  let backfill = rankingBackfills.get(uid);
+  if (!backfill) {
+    backfill = backfillHistoricalRanking(uid);
+    rankingBackfills.set(uid, backfill);
+    backfill.catch(() => rankingBackfills.delete(uid));
+  }
+  const history = await backfill;
+  const late = isStudent
+    ? await reconcileLatePenalties(uid)
+    : { penaltyCount: 0, lostRP: 0, nextPenaltyAt: null };
+  return { ...history, latePenaltyCount: late.penaltyCount, lateLostRP: late.lostRP, nextPenaltyAt: late.nextPenaltyAt };
+}
+
 export async function getRankingSettings(uid: string): Promise<RankingSettings> {
   const snapshot = await getDoc(rankSettingsRef(uid));
   if (!snapshot.exists()) return { publicName: "", visible: false };
@@ -630,9 +723,7 @@ export async function getDashboardData(uid: string) {
   const subjects = allSubjects.filter(subject => !subject.archived);
   const total = activities.length;
   const completed = activities.filter(item => item.completed).length;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const overdue = activities.filter(item => !item.completed && item.dueDate && item.dueDate < today).length;
+  const overdue = activities.filter(item => !item.completed && item.status !== "concluida" && isPastDueDate(item.dueDate)).length;
   const subjectById = new Map(subjects.map(item => [item.id, item]));
   const activityDistribution = subjects.map(subject => ({
     name: subject.name,
@@ -644,7 +735,7 @@ export async function getDashboardData(uid: string) {
     const done = rows.filter(item => item.completed).length;
     return { id: subject.id, name: subject.name, color: subject.color, total: rows.length, completed: done, progress: rows.length ? Math.round(done / rows.length * 100) : 0 };
   }).filter(item => item.total > 0);
-  const upcoming = activities.filter(item => !item.completed && item.dueDate).sort((a, b) => a.dueDate!.getTime() - b.dueDate!.getTime()).slice(0, 5);
+  const upcoming = activities.filter(item => !item.completed && item.status !== "concluida" && item.dueDate).sort((a, b) => a.dueDate!.getTime() - b.dueDate!.getTime()).slice(0, 5);
   const completionSeries = Array.from({ length: 7 }, (_, index) => {
     const day = new Date();
     day.setHours(0, 0, 0, 0);

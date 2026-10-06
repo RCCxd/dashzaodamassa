@@ -81,11 +81,12 @@ Este procedimento publica a versão independente do Dashboard do 2B: **SPA Vite 
 
 ### Vercel Blob privado — somente para anexos PDF
 
-1. No projeto Vercel, abra **Storage → Blob** e crie ou conecte uma store ao projeto. Selecione **Private** (não Public) e mantenha o plano **Hobby**. Não adicione cartão, não associe billing e não aceite Pro.
-2. Quando a store estiver conectada, o SDK pode usar a autorização OIDC gerenciada pela Vercel dentro da Function; não crie `BLOB_READ_WRITE_TOKEN`, chave no navegador, service account ou outro segredo `VITE_*` manualmente.
-3. O código limita cada arquivo a **10 MiB** e `application/pdf`. PDFs não são públicos: somente admin pode enviar/remover; alunos autenticados podem baixar pela Function após conferir que o caminho continua anexado à atividade Firestore. O upload envia os bytes diretamente ao Blob; o download é transmitido em streaming para não bufferizar uma resposta acima do limite de 4,5 MB da Function.
-4. Referência consultada em 05/10/2026: Hobby inclui **1 GB de armazenamento médio, 10.000 operações simples, 2.000 avançadas e 10 GB de transferência**. As cotas podem mudar. O Hobby não cobra excedente automaticamente; ao atingir o limite, o acesso ao Blob pode ser suspenso até a renovação. Acompanhe o painel.
-5. Se o painel não oferecer Blob privado dentro do Hobby ou solicitar pagamento, pare e deixe anexos desativados; **não** mude de plano, billing ou Blaze para fazê-lo funcionar.
+1. No projeto Vercel, abra **Storage → Blob** e crie ou conecte uma store ao projeto. Selecione **Private** (não Public), associe o projeto e habilite os ambientes **Preview** e **Production**. Mantenha o plano **Hobby**; não adicione cartão, billing ou Pro.
+2. Depois de conectar, a Vercel fornece à Function o ID da store e a credencial OIDC de runtime (`BLOB_STORE_ID` e `VERCEL_OIDC_TOKEN`); não copie nem invente valores, não crie `BLOB_READ_WRITE_TOKEN` manualmente e nunca coloque credenciais em `VITE_*`. **Salve e faça um novo deploy** para que a Function receba essas credenciais.
+3. Se aparecer “No blob credentials found”, a store não está conectada a este projeto/ambiente ou o deployment foi criado antes da conexão: confirme Storage → Blob → Project/Environment e faça redeploy. O código atualizado devolve uma orientação em português; isso não é resolvido editando o arquivo do PDF.
+4. O código limita cada arquivo a **10 MiB** e `application/pdf`. PDFs não são públicos: somente admin pode enviar/remover; alunos autenticados podem baixar pela Function após conferir que o caminho continua anexado à atividade Firestore. O upload envia os bytes diretamente ao Blob; o download é transmitido em streaming para não bufferizar uma resposta acima do limite de 4,5 MB da Function.
+5. Referência consultada em 05/10/2026: Hobby inclui **1 GB de armazenamento médio, 10.000 operações simples, 2.000 avançadas e 10 GB de transferência**. As cotas podem mudar. O Hobby não cobra excedente automaticamente; ao atingir o limite, o acesso ao Blob pode ser suspenso até a renovação. Acompanhe o painel.
+6. Se o painel não oferecer Blob privado dentro do Hobby ou solicitar pagamento, pare e deixe anexos desativados; **não** mude de plano, billing ou Blaze para fazê-lo funcionar.
 
 ### Sobre produção e Preview
 
@@ -99,7 +100,7 @@ O branch `main` costuma ser o branch de produção: commits nele geram deploymen
 4. Abra uma janela anônima ou outro navegador e cadastre uma conta de aluno com e-mail/senha. O aluno deve receber papel `student`, não deve conseguir alterar o catálogo e só deve ver seus próprios registros.
 5. Teste entrar/sair, **Esqueci minha senha**, concluir uma atividade, registrar uma sessão Pomodoro (**0 RP**), salvar nota/meta e recarregar; experimente mudar a aparência e confira se persiste.
 6. Abra e atualize diretamente `/login`, `/activities`, `/subjects`, `/focus`, `/ranking`, `/achievements`, `/planner` e `/settings`. `/api/blob` sem autenticação deve responder JSON `401`; assets `/assets/*` devem carregar com HTTP 200.
-7. Como admin, anexe um PDF menor que 10 MiB e baixe como aluno. Confirme que arquivo não PDF, PDF acima do limite, upload por usuário não admin e download sem login são recusados. Teste aderir e sair do placar com um aluno.
+7. Como admin, anexe um PDF menor que 10 MiB e baixe como aluno. Confirme que arquivo não PDF, PDF acima do limite, upload por usuário não admin e download sem login são recusados. Teste aderir e sair do placar com um aluno. Para testar multa, deixe uma atividade pendente vencer e mantenha a tela do aluno aberta até o prazo (ou reabra o site depois); a reconciliação verifica o prazo de 12 horas após a data salva ao meio-dia e registra uma perda única de até 5 RP.
 8. Só então envie aos colegas o endereço de produção `https://SEU-PROJETO.vercel.app`. Não é necessário comprar domínio; o subdomínio `vercel.app` serve para compartilhar.
 
 ## Parte 5 — (Opcional) importar dados do banco antigo
@@ -121,7 +122,7 @@ Se quiser importar matérias, atividades, conclusões, sessões, notas e metas d
 
 Na consulta de 4 de outubro de 2026, a página oficial do Firebase lista Spark como **sem custo e sem método de pagamento**; Authentication (exceto SMS/Phone Auth) está incluído. Para Firestore Standard, a página lista cotas gratuitas diárias de 50 mil leituras, 20 mil gravações e 20 mil exclusões, até 1 GiB armazenado e 10 GiB/mês de saída. Vercel Hobby é gratuito para uso pessoal/não comercial. As condições podem mudar; mantenha-se em Spark/Hobby e monitore o consumo. Se atingir os limites, o serviço pode ser limitado até a cota renovar; não habilite faturamento para “resolver” sem decidir conscientemente.
 
-Trinta alunos, por si só, não garantem nem excedem uma cota: o uso depende das leituras/escritas por tela e por pessoa. O projeto evita backend próprio e listeners realtime, mas confira o painel do Firebase depois de começar a usar.
+Trinta alunos, por si só, não garantem nem excedem uma cota: o uso depende das leituras/escritas por tela e por pessoa. Não há backend genérico; o placar ranqueado usa um listener Firestore em tempo real, enquanto os demais dados são consultados sob demanda. Confira o painel do Firebase depois de começar a usar.
 
 ## Solução rápida de erros
 
@@ -133,6 +134,9 @@ Trinta alunos, por si só, não garantem nem excedem uma cota: o uso depende das
 | `permission-denied` no Firestore | Confira se publicou `firestore.rules` com o UID real, sem o marcador `REPLACE_WITH_ADMIN_UID`; confirme também a variável admin. |
 | Assets CSS/JS 404 ou MIME `text/html` | Confirme que a implantação veio do commit com `vercel.json` Vite, build `pnpm build:vercel`, saída `dist`; o preset Express/saída `public` é configuração antiga. |
 | `/api/blob` retorna HTML ou 404 | Confira se `api/blob.ts` está na raiz, se Root Directory é `./` e se a integração Vite publicou a Function. Não permita que o rewrite SPA capture `/api/blob`.
+| “No blob credentials found” ou erro de credenciais Blob | Em **Storage → Blob**, confirme que a store **Private** está conectada a este projeto e aos ambientes **Preview/Production** que você está usando. Não cadastre `VERCEL_OIDC_TOKEN` manualmente: a Vercel o injeta no runtime. Salve e faça **Redeploy** depois de conectar. Como alternativa, o código aceita `BLOB_READ_WRITE_TOKEN` só no servidor; nunca use um `VITE_*` para esse token. Se continuar falhando, verifique se o deployment usa o projeto/ambiente correto e confira a resposta JSON de `/api/blob`; não faça upgrade nem ative cobrança.
+| A multa não aparece exatamente no horário do vencimento | Nesta stack gratuita não há Cloud Function nem Cron. A página do aluno programa a verificação do próximo prazo enquanto estiver aberta e também reconcilia ao entrar/abrir o site. Se ninguém estiver conectado no vencimento, a perda será registrada no próximo acesso; cada atividade continua protegida por um único registro de multa.
+| Atividade encerrada pelo administrador | O status editorial “Concluída” encerra aquela atividade para a turma: alunos que ainda não a concluíram não recebem nova conclusão nem multa; o controle aparece desabilitado. Quem já concluiu ainda pode reabri-la e reverter os RP concedidos.
 | Upload PDF pede billing/Pro | Pare. Não associe cartão, não habilite billing e não mude o Firebase para Blaze. Anexos exigem Blob privado dentro das cotas Hobby.
 | Download PDF retorna 404 | Confira se o pathname no documento corresponde ao anexo atual e se a store Blob privada continua conectada. URL assinada temporária não é pathname permanente.
 | O cadastro mostra erro de JSON vindo de `/api` | Confirme que o formulário ainda chama Firebase Auth e que Vercel implantou o commit correto, sem código tRPC legado.
@@ -146,6 +150,7 @@ Trinta alunos, por si só, não garantem nem excedem uma cota: o uso depende das
 - [Vercel Hobby — preço e escopo de uso](https://vercel.com/docs/plans/hobby)
 - [Vercel Blob — preços e cotas](https://vercel.com/docs/vercel-blob/usage-and-pricing)
 - [Vercel Blob — armazenamento privado](https://vercel.com/docs/vercel-blob/private-storage)
+- [Vercel Blob — SDK e credenciais OIDC](https://vercel.com/docs/vercel-blob/using-blob-sdk)
 - [Vercel Blob — autorização de client uploads](https://vercel.com/docs/vercel-blob/client-upload)
 - [Vercel Functions — streaming de respostas](https://vercel.com/docs/functions/streaming)
 - [Firebase — criar projeto e registrar app Web](https://firebase.google.com/docs/web/setup)

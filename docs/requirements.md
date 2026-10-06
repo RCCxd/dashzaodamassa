@@ -58,9 +58,11 @@ O client mostra/esconde controles por perfil, mas as regras Firestore são a aut
 ### Ranqueada, aparência e ajuda
 
 - Divisões inspiradas no Valorant vão de Ferro a Radiante, com 50 RP por divisão e Radiante a partir de 1.200 RP. RP combina prioridade (baixa 10, média 12, alta 15) e tipo (tarefa +0, prova +5, trabalho +3, projeto +4); Modo Foco, Pomodoro e sessões livres valem 0 RP.
-- O ledger registra o valor concedido e se a conclusão está ativa. Desmarcar a atividade reverte exatamente o valor do ledger; marcar novamente reativa a pontuação uma vez. O app também corrige uma vez RP de atividades desmarcadas em versões anteriores que continuaram contabilizadas e repara um ledger inativo quando sua conclusão histórica ainda existe. Não há multa por prazo nesta versão.
+- O ledger registra o valor concedido e se a conclusão está ativa. Desmarcar a atividade reverte exatamente o valor do ledger; marcar novamente reativa a pontuação uma vez. O app também corrige uma vez RP de atividades desmarcadas em versões anteriores que continuaram contabilizadas e repara um ledger inativo quando sua conclusão histórica ainda existe.
+- Uma atividade pendente com prazo perde 5 RP uma única vez por aluno/atividade depois do fim do dia local de vencimento; o campo de data sem horário é armazenado ao meio-dia, portanto o limite servidor é 12 horas depois. Concluir depois do prazo não devolve os pontos. A perda é limitada ao saldo disponível, nunca deixando o total negativo; atividades sem prazo, concluídas ou arquivadas (incluindo matérias arquivadas) não são multadas. Admin não recebe multa e foco/Pomodoro continuam valendo zero. A multa é reconciliada no próximo carregamento e por timer enquanto o app está aberto, sem Cron/Cloud Function; Firestore Rules valida o horário do servidor e a operação é idempotente.
 - Página `/ranking` permite opt-in/opt-out explícito e apelido público de 2–32 caracteres. `leaderboard/{uid}` contém somente apelido, RP total e atualização; não contém e-mail, notas, metas, sessões ou papel.
 - A tabela usa listener Firestore em tempo real e reflete alterações de saldo em sessões abertas sem polling periódico.
+- Penalidades também atualizam o saldo público na mesma transação; se a conexão cair, são reconciliadas na próxima abertura/retomada.
 - Cores, fundos, textura e densidade visual são individuais por UID e persistem entre páginas/sessões. A interface oferece exclusivamente fundos escuros.
 - Ações de ajuda contextual abrem pop-ups específicos da página, acessíveis por toque e teclado.
 

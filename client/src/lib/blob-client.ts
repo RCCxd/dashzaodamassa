@@ -20,9 +20,9 @@ async function idToken(): Promise<string> {
   return user.getIdToken();
 }
 
-function responseError(payload: unknown, fallback: string): string {
+function responseError(payload: unknown, fallback: string, status?: number): string {
   if (payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string") return payload.error;
-  return fallback;
+  return status ? `${fallback} (HTTP ${status}).` : fallback;
 }
 
 export async function uploadTaskPdf(file: File, activityId: string): Promise<TaskAttachment> {
@@ -41,7 +41,7 @@ export async function uploadTaskPdf(file: File, activityId: string): Promise<Tas
   });
   const signPayload: unknown = await signResponse.json().catch(() => null);
   if (!signResponse.ok || !signPayload || typeof signPayload !== "object" || !("url" in signPayload) || typeof signPayload.url !== "string") {
-    throw new Error(responseError(signPayload, "Não foi possível iniciar o upload. Confirme a conexão da Blob privada ao projeto Vercel."));
+    throw new Error(responseError(signPayload, "Não foi possível iniciar o upload. Confirme se api/blob.ts foi publicada e se a Blob privada está conectada ao projeto e ambiente Vercel", signResponse.status));
   }
   const uploadResponse = await fetch(signPayload.url, {
     method: "PUT",
@@ -58,7 +58,7 @@ export async function downloadTaskPdf(pathname: string, activityId: string, file
   });
   if (!response.ok) {
     const payload: unknown = await response.json().catch(() => null);
-    throw new Error(responseError(payload, "Não foi possível abrir o PDF. Entre novamente e tente de novo."));
+    throw new Error(responseError(payload, "Não foi possível abrir o PDF. Confirme seu login, o anexo da atividade e a Blob privada", response.status));
   }
   const url = URL.createObjectURL(await response.blob());
   const link = document.createElement("a");
@@ -75,6 +75,6 @@ export async function deleteTaskPdf(pathname: string, activityId: string): Promi
   });
   if (!response.ok) {
     const payload: unknown = await response.json().catch(() => null);
-    throw new Error(responseError(payload, "O anexo antigo continua no Blob; o registro da atividade foi salvo."));
+    throw new Error(responseError(payload, "O anexo antigo continua no Blob; o registro da atividade foi salvo", response.status));
   }
 }

@@ -27,21 +27,61 @@ export function AppShell({ children, user }: { children: ReactNode; user: UserPr
   const utils = firebaseApi.useUtils();
   const historyMigration = firebaseApi.ranking.backfill.useMutation();
   const checkedUid = useRef("");
+  const mutationRef = useRef(historyMigration.mutateAsync);
+  const utilsRef = useRef(utils);
+  mutationRef.current = historyMigration.mutateAsync;
+  utilsRef.current = utils;
   const uid = auth.user?.uid ?? "";
   const firstName = user.name?.split(" ")[0] || user.email?.split("@")[0] || "Estudante";
 
   useEffect(() => {
-    if (!uid || checkedUid.current === uid) return;
-    checkedUid.current = uid;
-    void historyMigration.mutateAsync().then(result => {
-      if (!result.awarded && !result.reversed) return;
-      void utils.ranking.state.invalidate();
-      void utils.ranking.leaderboard.invalidate();
-      const awarded = result.awarded ? `+${result.earnedRP} RP em ${result.awarded} atividade${result.awarded === 1 ? "" : "s"}` : "";
-      const reversed = result.reversed ? `−${result.lostRP} RP de ${result.reversed} atividade${result.reversed === 1 ? " reaberta" : "s reabertas"}` : "";
-      toast.success(`Histórico ranqueado ajustado: ${[awarded, reversed].filter(Boolean).join("; ")}.`);
-    }).catch(error => toast.error(error instanceof Error ? `Histórico ranqueado não carregado: ${error.message}` : "Não foi possível carregar o histórico ranqueado."));
-  }, [uid, historyMigration.mutateAsync, utils]);
+    if (!uid) {
+      checkedUid.current = "";
+      return;
+    }
+    const sessionKey = `${uid}:${user.role}`;
+    if (checkedUid.current === sessionKey) return;
+    checkedUid.current = sessionKey;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const reconcile = async (notify: boolean) => {
+      try {
+        const result = await mutationRef.current();
+        if (cancelled) return;
+        if (result.awarded || result.reversed || result.latePenaltyCount) {
+          void utilsRef.current.ranking.state.invalidate();
+          void utilsRef.current.ranking.leaderboard.invalidate();
+        }
+        if (notify && (result.awarded || result.reversed)) {
+          const awarded = result.awarded ? `+${result.earnedRP} RP em ${result.awarded} atividade${result.awarded === 1 ? "" : "s"}` : "";
+          const reversed = result.reversed ? `−${result.lostRP} RP de ${result.reversed} atividade${result.reversed === 1 ? " reaberta" : "s reabertas"}` : "";
+          toast.success(`Histórico ranqueado ajustado: ${[awarded, reversed].filter(Boolean).join("; ")}.`);
+        }
+        if (notify && result.latePenaltyCount) {
+          const activities = `${result.latePenaltyCount} atividade${result.latePenaltyCount === 1 ? "" : "s"}`;
+          toast.warning(result.lateLostRP
+            ? `Atraso registrado: −${result.lateLostRP} RP em ${activities}. A perda é única e limitada ao seu saldo.`
+            : `Atraso registrado em ${activities}. Seu saldo já estava em 0 RP; a multa não será repetida.`);
+        }
+        if (result.nextPenaltyAt) {
+          const delay = Math.max(1_000, Math.min(2_147_000_000, result.nextPenaltyAt.getTime() - Date.now()));
+          timer = setTimeout(() => { void reconcile(true); }, delay);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          if (notify) toast.error(error instanceof Error ? `Ranqueada não atualizada: ${error.message}` : "Não foi possível atualizar a ranqueada.");
+          timer = setTimeout(() => { void reconcile(false); }, 5 * 60_000);
+        }
+      }
+    };
+
+    void reconcile(true);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [uid, user.role]);
 
   return <div className="app-frame min-h-screen bg-background text-foreground">
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-[244px] flex-col border-r border-border bg-card px-4 py-6 lg:flex">

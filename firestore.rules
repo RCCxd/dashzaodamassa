@@ -93,6 +93,50 @@ service cloud.firestore {
       return totalRP >= points ? totalRP - points : 0;
     }
 
+    function activityDeadline(activityId) {
+      let activityPath = /databases/$(database)/documents/activities/$(activityId);
+      let dueDate = exists(activityPath) ? get(activityPath).data.get("dueDate", null) : null;
+      return dueDate is timestamp ? dueDate + duration.value(12, "h") : null;
+    }
+
+    function activityIsPastDeadline(activityId) {
+      let deadline = activityDeadline(activityId);
+      return deadline is timestamp && request.time > deadline;
+    }
+
+    function newLatePenaltyLoss(uid, activityId) {
+      let penaltyPath = /databases/$(database)/documents/users/$(uid)/latePenalties/$(activityId);
+      return existsAfter(penaltyPath) && !exists(penaltyPath) ? getAfter(penaltyPath).data.lostRP : 0;
+    }
+
+    function expectedRPAfterAward(uid, activityId, oldTotal, oldPoints, newPoints, reverseOld) {
+      let baseRP = reverseOld ? subtractRP(oldTotal, oldPoints) : oldTotal;
+      return subtractRP(baseRP, newLatePenaltyLoss(uid, activityId)) + newPoints;
+    }
+
+    function validLateCompletion(uid, activityId) {
+      let penaltyPath = /databases/$(database)/documents/users/$(uid)/latePenalties/$(activityId);
+      return !activityIsPastDeadline(activityId) || existsAfter(penaltyPath);
+    }
+
+    function validLatePenaltyState(uid, activityId, totalAfter) {
+      let penaltyPath = /databases/$(database)/documents/users/$(uid)/latePenalties/$(activityId);
+      let statePath = /databases/$(database)/documents/users/$(uid)/ranking/state;
+      let completionPath = /databases/$(database)/documents/users/$(uid)/activityCompletions/$(activityId);
+      let ledgerPath = /databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId);
+      let totalBefore = exists(statePath) ? get(statePath).data.totalRP : 0;
+      let lostRP = existsAfter(penaltyPath) ? getAfter(penaltyPath).data.lostRP : 0;
+      let earnedRP = !exists(completionPath) && existsAfter(completionPath) && existsAfter(ledgerPath) ? getAfter(ledgerPath).data.points : 0;
+      let expectedTotal = subtractRP(totalBefore, lostRP) + earnedRP;
+      return existsAfter(penaltyPath)
+        && !exists(penaltyPath)
+        && existsAfter(statePath)
+        && (!existsAfter(completionPath) || (existsAfter(ledgerPath) && getAfter(ledgerPath).data.active == true))
+        && getAfter(statePath).data.lastActivityId == activityId
+        && totalAfter == expectedTotal
+        && publicRankIsSynced(uid, expectedTotal);
+    }
+
     function publicRankIsSynced(uid, totalRP) {
       let settingsPath = /databases/$(database)/documents/users/$(uid)/ranking/settings;
       let publicPath = /databases/$(database)/documents/leaderboard/$(uid);
@@ -123,12 +167,45 @@ service cloud.firestore {
         && request.resource.data.updatedAt == request.time;
     }
 
+    function validRankAwardState(uid, activityId, oldTotal, oldPoints, oldActive, newPoints, totalAfter) {
+      let ledgerPath = /databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId);
+      let completionPath = /databases/$(database)/documents/users/$(uid)/activityCompletions/$(activityId);
+      let activityPath = /databases/$(database)/documents/activities/$(activityId);
+      return existsAfter(completionPath)
+        && exists(activityPath)
+        && (exists(completionPath)
+          || (get(activityPath).data.get("archived", false) != true
+            && isActiveSubject(get(activityPath).data.subjectId)
+            && validLateCompletion(uid, activityId)))
+        && getAfter(ledgerPath).data.active == true
+        && newPoints == activityPoints(get(activityPath).data.get("priority", "media"), get(activityPath).data.get("type", "tarefa"))
+        && (exists(completionPath)
+          ? get(completionPath).data.activityId == activityId && get(completionPath).data.completedAt is timestamp
+          : getAfter(completionPath).data.activityId == activityId && getAfter(completionPath).data.completedAt == request.time)
+        && (((!exists(ledgerPath) || !oldActive)
+            && totalAfter == expectedRPAfterAward(uid, activityId, oldTotal, oldPoints, newPoints, false))
+          || (exists(ledgerPath) && oldActive && !exists(completionPath)
+            && totalAfter == expectedRPAfterAward(uid, activityId, oldTotal, oldPoints, newPoints, true)));
+    }
+
+    function validRankActivityState(uid, activityId, oldTotal, oldPoints, oldActive, newPoints, totalAfter) {
+      let ledgerPath = /databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId);
+      let completionPath = /databases/$(database)/documents/users/$(uid)/activityCompletions/$(activityId);
+      return existsAfter(ledgerPath)
+        && getAfter(ledgerPath).data.activityId == activityId
+        && (validRankAwardState(uid, activityId, oldTotal, oldPoints, oldActive, newPoints, totalAfter)
+          || (!existsAfter(completionPath)
+            && exists(ledgerPath)
+            && oldActive
+            && getAfter(ledgerPath).data.active == false
+            && getAfter(ledgerPath).data.points == oldPoints
+            && totalAfter == subtractRP(oldTotal, oldPoints)));
+    }
+
     function validRankState(uid) {
       let activityId = request.resource.data.lastActivityId;
       let statePath = /databases/$(database)/documents/users/$(uid)/ranking/state;
       let ledgerPath = /databases/$(database)/documents/users/$(uid)/rankedActivities/$(activityId);
-      let completionPath = /databases/$(database)/documents/users/$(uid)/activityCompletions/$(activityId);
-      let activityPath = /databases/$(database)/documents/activities/$(activityId);
       let oldTotal = exists(statePath) ? get(statePath).data.totalRP : 0;
       let oldPoints = exists(ledgerPath) ? get(ledgerPath).data.points : 0;
       let oldActive = exists(ledgerPath) && ledgerIsActive(get(ledgerPath).data);
@@ -141,28 +218,9 @@ service cloud.firestore {
         && request.resource.data.updatedAt == request.time
         && ((activityId == null && totalAfter == 0 && !exists(statePath))
           || (activityId is string
-            && existsAfter(ledgerPath)
-            && getAfter(ledgerPath).data.activityId == activityId
             && publicRankIsSynced(uid, totalAfter)
-            && ((existsAfter(completionPath)
-              && exists(activityPath)
-              && (exists(completionPath)
-                || (get(activityPath).data.get("archived", false) != true
-                  && isActiveSubject(get(activityPath).data.subjectId)))
-              && getAfter(ledgerPath).data.active == true
-              && newPoints == activityPoints(get(activityPath).data.get("priority", "media"), get(activityPath).data.get("type", "tarefa"))
-              && (exists(completionPath)
-                ? get(completionPath).data.activityId == activityId && get(completionPath).data.completedAt is timestamp
-                : getAfter(completionPath).data.activityId == activityId && getAfter(completionPath).data.completedAt == request.time)
-              && ((!exists(ledgerPath) || !oldActive) && totalAfter == oldTotal + newPoints
-                || (exists(ledgerPath) && oldActive && !exists(completionPath)
-                  && totalAfter == subtractRP(oldTotal, oldPoints) + newPoints)))
-              || (!existsAfter(completionPath)
-                && exists(ledgerPath)
-                && oldActive
-                && getAfter(ledgerPath).data.active == false
-                && getAfter(ledgerPath).data.points == oldPoints
-                && totalAfter == subtractRP(oldTotal, oldPoints)))));
+            && (validRankActivityState(uid, activityId, oldTotal, oldPoints, oldActive, newPoints, totalAfter)
+              || validLatePenaltyState(uid, activityId, totalAfter))));
     }
 
     function validRankSettings(uid) {
@@ -224,7 +282,7 @@ service cloud.firestore {
           : getAfter(completionPath).data.activityId == activityId && getAfter(completionPath).data.completedAt == request.time)
         && existsAfter(statePath)
         && getAfter(statePath).data.lastActivityId == activityId
-        && getAfter(statePath).data.totalRP == stateBefore + request.resource.data.points
+        && getAfter(statePath).data.totalRP == expectedRPAfterAward(uid, activityId, stateBefore, 0, request.resource.data.points, false)
         && publicRankIsSynced(uid, getAfter(statePath).data.totalRP);
     }
 
@@ -267,7 +325,7 @@ service cloud.firestore {
               : getAfter(completionPath).data.activityId == activityId && getAfter(completionPath).data.completedAt == request.time)
             && existsAfter(statePath)
             && getAfter(statePath).data.lastActivityId == activityId
-            && getAfter(statePath).data.totalRP == stateBefore + request.resource.data.points
+            && getAfter(statePath).data.totalRP == expectedRPAfterAward(uid, activityId, stateBefore, 0, request.resource.data.points, false)
             && publicRankIsSynced(uid, getAfter(statePath).data.totalRP))
           || (oldActive
             && request.resource.data.active == true
@@ -281,7 +339,7 @@ service cloud.firestore {
             && existsAfter(completionPath)
             && existsAfter(statePath)
             && getAfter(statePath).data.lastActivityId == activityId
-            && getAfter(statePath).data.totalRP == staleTotal + request.resource.data.points
+            && getAfter(statePath).data.totalRP == expectedRPAfterAward(uid, activityId, stateBefore, oldPoints, request.resource.data.points, true)
             && publicRankIsSynced(uid, getAfter(statePath).data.totalRP)));
     }
 
@@ -298,15 +356,17 @@ service cloud.firestore {
         && request.resource.data.completedAt == request.time
         && exists(activityPath)
         && get(activityPath).data.get("archived", false) != true
+        && get(activityPath).data.status != "concluida"
         && isActiveSubject(get(activityPath).data.subjectId)
+        && validLateCompletion(uid, activityId)
         && existsAfter(ledgerPath)
         && getAfter(ledgerPath).data.active == true
         && getAfter(ledgerPath).data.points == activityPoints(get(activityPath).data.get("priority", "media"), get(activityPath).data.get("type", "tarefa"))
         && existsAfter(statePath)
         && getAfter(statePath).data.lastActivityId == activityId
         && ((!ledgerExists || !oldActive)
-          ? getAfter(statePath).data.totalRP == stateBefore + getAfter(ledgerPath).data.points
-          : getAfter(statePath).data.totalRP == subtractRP(stateBefore, oldPoints) + getAfter(ledgerPath).data.points)
+          ? getAfter(statePath).data.totalRP == expectedRPAfterAward(uid, activityId, stateBefore, oldPoints, getAfter(ledgerPath).data.points, false)
+          : getAfter(statePath).data.totalRP == expectedRPAfterAward(uid, activityId, stateBefore, oldPoints, getAfter(ledgerPath).data.points, true))
         && publicRankIsSynced(uid, getAfter(statePath).data.totalRP);
     }
 
@@ -325,6 +385,38 @@ service cloud.firestore {
           && getAfter(statePath).data.updatedAt == request.time
           && getAfter(statePath).data.totalRP == totalAfter
           && publicRankIsSynced(uid, totalAfter));
+    }
+
+    function validLatePenaltyCreate(uid, activityId) {
+      let activityPath = /databases/$(database)/documents/activities/$(activityId);
+      let penaltyPath = /databases/$(database)/documents/users/$(uid)/latePenalties/$(activityId);
+      let completionPath = /databases/$(database)/documents/users/$(uid)/activityCompletions/$(activityId);
+      let statePath = /databases/$(database)/documents/users/$(uid)/ranking/state;
+      let deadline = activityDeadline(activityId);
+      let totalBefore = exists(statePath) ? get(statePath).data.totalRP : 0;
+      let expectedLoss = totalBefore >= 5 ? 5 : totalBefore;
+      let totalAfter = existsAfter(statePath) ? getAfter(statePath).data.totalRP : 0;
+      return !isAdmin()
+        && request.resource.data.keys().hasOnly(["activityId", "penaltyRP", "lostRP", "dueAt", "penalizedAt"])
+        && request.resource.data.keys().hasAll(["activityId", "penaltyRP", "lostRP", "dueAt", "penalizedAt"])
+        && request.resource.data.activityId == activityId
+        && request.resource.data.penaltyRP == 5
+        && request.resource.data.lostRP is int
+        && request.resource.data.lostRP == expectedLoss
+        && request.resource.data.dueAt == deadline
+        && request.resource.data.penalizedAt == request.time
+        && !exists(penaltyPath)
+        && (!exists(completionPath)
+          || (get(completionPath).data.completedAt is timestamp && get(completionPath).data.completedAt > deadline))
+        && exists(activityPath)
+        && get(activityPath).data.get("archived", false) != true
+        && get(activityPath).data.status != "concluida"
+        && isActiveSubject(get(activityPath).data.subjectId)
+        && deadline is timestamp
+        && request.time > deadline
+        && (!existsAfter(completionPath)
+          || (getAfter(completionPath).data.activityId == activityId && getAfter(completionPath).data.completedAt == request.time))
+        && validLatePenaltyState(uid, activityId, totalAfter);
     }
 
     match /users/{uid} {
@@ -423,6 +515,12 @@ service cloud.firestore {
         allow create: if owns(uid) && validRankLedgerCreate(uid, activityId);
         allow update: if owns(uid) && validRankLedgerUpdate(uid, activityId);
         allow delete: if false;
+      }
+
+      match /latePenalties/{activityId} {
+        allow read: if owns(uid);
+        allow create: if owns(uid) && validLatePenaltyCreate(uid, activityId);
+        allow update, delete: if false;
       }
     }
 

@@ -50,6 +50,15 @@ function adminUid(): string {
   return value;
 }
 
+function blobCredentials() {
+  const token = process.env.BLOB_READ_WRITE_TOKEN?.trim();
+  const oidcToken = process.env.VERCEL_OIDC_TOKEN?.trim();
+  const storeId = process.env.BLOB_STORE_ID?.trim();
+  if (oidcToken && storeId) return { oidcToken, storeId };
+  if (token) return { token };
+  throw new Error("A Blob privada não está conectada a este projeto/ambiente. Em Vercel → Storage → Blob, conecte uma store privada ao projeto e habilite Preview/Production; depois faça um novo deploy.");
+}
+
 async function authenticate(request: ApiRequest): Promise<FirebaseClaims> {
   const authorization = request.headers.authorization;
   const token = typeof authorization === "string" && authorization.startsWith("Bearer ")
@@ -96,6 +105,7 @@ function statusFor(error: unknown): number {
   const message = error instanceof Error ? error.message : "";
   if (message.includes("Entre na conta") || message.includes("Sessão Firebase")) return 401;
   if (message.includes("administrador") || message.includes("Não autorizado")) return 403;
+  if (message.includes("Blob privada não está conectada")) return 503;
   if (message.includes("Caminho de arquivo inválido") || message.includes("O arquivo precisa ser PDF")) return 400;
   return 500;
 }
@@ -118,12 +128,14 @@ export default async function handler(request: ApiRequest, response: ApiResponse
       }
       const validUntil = Date.now() + 3 * 60_000;
       const constraints = { allowedContentTypes: ["application/pdf"], maximumSizeInBytes: MAX_PDF_BYTES, validUntil };
-      const signedToken = await issueSignedToken({ pathname, operations: ["put"], ...constraints });
+      const credentials = blobCredentials();
+      const signedToken = await issueSignedToken({ pathname, operations: ["put"], ...constraints, ...credentials });
       const signedUrl = await presignUrl(signedToken, {
         operation: "put",
         pathname,
         access: "private",
         ...constraints,
+        ...credentials,
         addRandomSuffix: false,
         allowOverwrite: false,
       });
@@ -143,7 +155,7 @@ export default async function handler(request: ApiRequest, response: ApiResponse
         json(response, 404, { error: "Arquivo não encontrado." });
         return;
       }
-      const blob = await get(pathname, { access: "private" });
+      const blob = await get(pathname, { access: "private", ...blobCredentials() });
       if (!blob || blob.statusCode !== 200) {
         json(response, 404, { error: "Arquivo não encontrado." });
         return;
@@ -170,7 +182,7 @@ export default async function handler(request: ApiRequest, response: ApiResponse
         json(response, 409, { error: "Remova primeiro o anexo da atividade." });
         return;
       }
-      await del(pathname);
+      await del(pathname, blobCredentials());
       json(response, 200, { success: true });
       return;
     }

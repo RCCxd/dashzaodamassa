@@ -26,3 +26,18 @@ A documentação de Vite explica hosting SPA estático, rewrites e funções: se
 ## Compromisso de custo
 
 Firebase Authentication/Firestore permanecem em Spark. A rota de Blob é opcional e separada do Firestore; não adicionar Firebase Storage, Cloud Functions, service account ou credenciais privadas do Firebase ao bundle. Se a Vercel solicitar cartão, Pro ou billing para a Blob store, parar e não confirmar.
+
+
+## Diagnóstico de credenciais Blob e penalidades por prazo (consultado em 06/10/2026)
+
+A mensagem apresentada pelo SDK (`No blob credentials found`) indica que a Function não recebeu credenciais do Blob. A documentação da Vercel descreve OIDC gerenciado para Functions quando a Blob store está conectada ao projeto; neste projeto, o runtime deve receber `BLOB_STORE_ID` e `VERCEL_OIDC_TOKEN`. O token `BLOB_READ_WRITE_TOKEN` é uma alternativa baseada em segredo, não deve ser exposto ao navegador nem embutido em `VITE_*`. Depois de conectar a store aos ambientes Production/Preview, é necessário criar um novo deployment para que as variáveis estejam disponíveis. A captura do usuário confirma a mensagem do SDK; a consulta de logs do Hobby não retornou registros dentro da janela solicitada, portanto não foi usada para inferir ausência/presença da store.
+
+- [Conectar o SDK Blob a Vercel Functions — credenciais OIDC](https://vercel.com/docs/vercel-blob/using-blob-sdk)
+- [Armazenamento Blob privado — autenticação e downloads](https://vercel.com/docs/vercel-blob/private-storage)
+- [Uploads do lado do cliente — credenciais gerenciadas](https://vercel.com/docs/vercel-blob/client-upload)
+
+A penalidade por prazo usa o prazo como data local sem horário informado: a atividade vence no fim daquele dia, isto é, 12 horas após o `dueDate` armazenado ao meio-dia. Firestore Security Rules suportam o operador aditivo para valores `timestamp`/`duration`, permitindo verificar o prazo no servidor com `request.time` em vez de confiar no relógio do navegador.
+
+- [Firebase Security Rules — operadores e tipos](https://firebase.google.com/docs/rules/rules-language)
+- [Firebase Security Rules — tipo Timestamp](https://firebase.google.com/docs/reference/rules/rules.Timestamp)
+- [Firebase Security Rules — tipo Duration](https://firebase.google.com/docs/reference/rules/rules.Duration)

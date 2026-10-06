@@ -12,7 +12,7 @@ Aplicativo escolar responsivo para matérias, atividades, Pomodoro, conquistas, 
 - Admin definido por UID permitido nas regras Firestore, não por um papel enviado pelo navegador.
 - Cadastro de alunos aberto; novas contas recebem papel `student`.
 - Tema escuro permanente; PWA, service worker e tela offline.
-- Não há Cloud Functions, App Hosting, Phone Auth/SMS, Storage ou servidor API no runtime do site.
+- Não há backend genérico, Cloud Functions, App Hosting, Phone Auth/SMS ou Firebase Storage; existe somente a Function Vercel `/api/blob` para anexos PDF privados.
 
 ## Configuração Firebase (necessária antes de cadastrar)
 
@@ -49,7 +49,11 @@ pnpm dev
 
 Para um projeto novo, importe o repositório GitHub pela Vercel e confirme: Root Directory = raiz do repositório, Framework Preset = Vite, Build Command = `pnpm build:vercel`, Output Directory = `dist`. `vercel.json` já define esses valores e os rewrites das rotas SPA. Para um projeto já publicado, envie mudanças de teste em uma **branch diferente de `main`** para gerar Preview antes de mesclar em produção.
 
-Após o Preview, valide `/`, `/login`, `/activities`, `/subjects`, `/focus`, `/manifest.webmanifest` e os assets `/assets/*`. O app não tem endpoint `/api/health`, pois não há backend próprio.
+Após o Preview, valide `/`, `/login`, `/activities`, `/subjects`, `/focus`, `/manifest.webmanifest` e os assets `/assets/*`. `/api/blob` sem login deve responder JSON `401` — não há endpoint `/api/health`, pois não existe backend genérico.
+
+## Anexos PDF
+
+Os PDFs usam Vercel Blob em modo **Private**, com limite de 10 MiB e download por uma Function autenticada com Firebase Auth. Conecte uma store privada aos ambientes Preview e Production e faça Redeploy para habilitar as credenciais OIDC gerenciadas; não copie tokens para `VITE_*`. O passo a passo e o diagnóstico de credenciais estão em [DEPLOY-FIREBASE-VERCEL.md](DEPLOY-FIREBASE-VERCEL.md).
 
 ## Importar dados do MySQL antigo (opcional)
 

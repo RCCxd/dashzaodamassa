@@ -296,7 +296,141 @@ async function run() {
     if (hiddenPublicRank.exists()) throw new Error("O opt-out deixou o apelido visível no placar.");
     await assertFails(getDoc(doc(guestDb, "leaderboard", studentUid)));
 
-    console.log("Firestore Rules: isolamento, agenda, ranking, opt-in, arquivo lógico, histórico, preferências e foco passaram.");
+    await assertSucceeds(setDoc(doc(adminDb, "subjects", "late-test-subject"), {
+      name: "Matéria de teste de prazo", color: "#65c69a", teacher: null, schedule: null, description: null,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    }));
+    const overdueDueDate = Timestamp.fromDate(new Date(Date.now() - 36 * 60 * 60_000));
+    const lateActivityData = (title: string) => ({
+      ...activityData(title, "media"), subjectId: "late-test-subject", dueDate: overdueDueDate,
+    });
+    await assertSucceeds(setDoc(doc(adminDb, "activities", "late-seed"), {
+      ...activityData("Atividade para saldo de teste", "media"), subjectId: "late-test-subject",
+    }));
+    await assertSucceeds(setDoc(doc(adminDb, "activities", "late-one"), lateActivityData("Atrasada 1")));
+    await assertSucceeds(setDoc(doc(adminDb, "activities", "late-two"), lateActivityData("Atrasada 2")));
+    await assertSucceeds(setDoc(doc(adminDb, "activities", "late-three"), lateActivityData("Atrasada 3")));
+    await assertSucceeds(setDoc(doc(adminDb, "activities", "late-no-penalty"), lateActivityData("Atrasada sem registro")));
+    await assertSucceeds(setDoc(doc(adminDb, "activities", "late-no-deadline"), {
+      ...activityData("Atividade sem prazo", "media"), subjectId: "late-test-subject",
+    }));
+    await assertSucceeds(setDoc(doc(adminDb, "activities", "late-archived"), {
+      ...lateActivityData("Atividade arquivada"), archived: true, archivedAt: serverTimestamp(),
+    }));
+    await assertSucceeds(setDoc(doc(adminDb, "subjects", "late-archived-subject"), {
+      name: "Matéria arquivada de teste", color: "#65c69a", teacher: null, schedule: null, description: null,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    }));
+    await assertSucceeds(setDoc(doc(adminDb, "activities", "late-under-archived-subject"), {
+      ...lateActivityData("Atividade em matéria arquivada"), subjectId: "late-archived-subject",
+    }));
+    await assertSucceeds(updateDoc(doc(adminDb, "subjects", "late-archived-subject"), {
+      archived: true, archivedAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    }));
+    await assertSucceeds(setDoc(doc(adminDb, "activities", "late-closed"), {
+      ...lateActivityData("Atividade encerrada"), status: "concluida",
+    }));
+    const futureDueDate = Timestamp.fromDate(new Date(Date.now() + 36 * 60 * 60_000));
+    await assertSucceeds(setDoc(doc(adminDb, "activities", "closed-upcoming"), {
+      ...activityData("Atividade encerrada antes do prazo", "media"), subjectId: "late-test-subject",
+      status: "concluida", dueDate: futureDueDate,
+    }));
+
+    const seedCompletion = doc(studentDb, "users", studentUid, "activityCompletions", "late-seed");
+    const seedLedger = doc(studentDb, "users", studentUid, "rankedActivities", "late-seed");
+    await assertSucceeds(runTransaction(studentDb, async transaction => {
+      const [completion, ledger, state] = await Promise.all([transaction.get(seedCompletion), transaction.get(seedLedger), transaction.get(stateRef)]);
+      if (completion.exists() || ledger.exists() || !state.exists()) throw new Error("Saldo de teste inesperado antes da penalidade.");
+      const totalRP = state.data().totalRP + 12;
+      transaction.set(seedCompletion, { activityId: "late-seed", completedAt: serverTimestamp() });
+      transaction.set(seedLedger, { activityId: "late-seed", points: 12, awardedAt: serverTimestamp(), active: true, reversedAt: null });
+      transaction.set(stateRef, { totalRP, lastActivityId: "late-seed", updatedAt: serverTimestamp() });
+    }));
+
+    const tryLatePenalty = (database: typeof studentDb, uid: string, activityId: string) => setDoc(
+      doc(database, "users", uid, "latePenalties", activityId),
+      {
+        activityId, penaltyRP: 5, lostRP: 5,
+        dueAt: Timestamp.fromDate(new Date(overdueDueDate.toDate().getTime() + 12 * 60 * 60_000)),
+        penalizedAt: serverTimestamp(),
+      },
+    );
+    await assertFails(setDoc(doc(adminDb, "users", adminUid, "latePenalties", "late-one"), {}));
+    await assertFails(tryLatePenalty(studentDb, studentUid, "late-no-deadline"));
+    await assertFails(tryLatePenalty(studentDb, studentUid, "late-archived"));
+    await assertFails(tryLatePenalty(studentDb, studentUid, "late-under-archived-subject"));
+    await assertFails(tryLatePenalty(studentDb, studentUid, "late-closed"));
+
+    const latePenaltyIds = ["late-one", "late-two", "late-three"] as const;
+    const expectedLosses = [5, 5, 2] as const;
+    for (let index = 0; index < latePenaltyIds.length; index += 1) {
+      const activityId = latePenaltyIds[index]!;
+      const penaltyRef = doc(studentDb, "users", studentUid, "latePenalties", activityId);
+      await assertSucceeds(runTransaction(studentDb, async transaction => {
+        const [activity, completion, penalty, state] = await Promise.all([
+          transaction.get(doc(studentDb, "activities", activityId)),
+          transaction.get(doc(studentDb, "users", studentUid, "activityCompletions", activityId)),
+          transaction.get(penaltyRef), transaction.get(stateRef),
+        ]);
+        if (!activity.exists() || completion.exists() || penalty.exists() || !state.exists()) throw new Error("Atividade vencida inesperada antes da multa.");
+        const totalBefore = state.data().totalRP;
+        const lostRP = Math.min(5, totalBefore);
+        const dueDate = activity.data().dueDate as Timestamp;
+        const dueAt = Timestamp.fromDate(new Date(dueDate.toDate().getTime() + 12 * 60 * 60_000));
+        const totalRP = Math.max(0, totalBefore - lostRP);
+        transaction.set(penaltyRef, { activityId, penaltyRP: 5, lostRP, dueAt, penalizedAt: serverTimestamp() });
+        transaction.set(stateRef, { totalRP, lastActivityId: activityId, updatedAt: serverTimestamp() });
+      }));
+      const savedPenalty = await getDoc(penaltyRef);
+      if (savedPenalty.data()?.lostRP !== expectedLosses[index]) throw new Error(`Multa ${activityId} não respeitou o limite/floor esperado.`);
+      if (index === 0) {
+        const dueAt = Timestamp.fromDate(new Date(overdueDueDate.toDate().getTime() + 12 * 60 * 60_000));
+        await assertFails(setDoc(penaltyRef, { activityId, penaltyRP: 5, lostRP: 5, dueAt, penalizedAt: serverTimestamp() }));
+      }
+    }
+    if ((await getDoc(stateRef)).data()?.totalRP !== 0) throw new Error("As multas levaram o saldo abaixo ou acima do piso zero esperado.");
+
+    const paidLateCompletion = doc(studentDb, "users", studentUid, "activityCompletions", "late-one");
+    const paidLateLedger = doc(studentDb, "users", studentUid, "rankedActivities", "late-one");
+    await assertSucceeds(runTransaction(studentDb, async transaction => {
+      const [activity, completion, ledger, state] = await Promise.all([
+        transaction.get(doc(studentDb, "activities", "late-one")), transaction.get(paidLateCompletion),
+        transaction.get(paidLateLedger), transaction.get(stateRef),
+      ]);
+      if (!activity.exists() || completion.exists() || ledger.exists() || !state.exists()) throw new Error("Conclusão de atividade multada inesperada.");
+      const totalRP = state.data().totalRP + 12;
+      transaction.set(paidLateCompletion, { activityId: "late-one", completedAt: serverTimestamp() });
+      transaction.set(paidLateLedger, { activityId: "late-one", points: 12, awardedAt: serverTimestamp(), active: true, reversedAt: null });
+      transaction.set(stateRef, { totalRP, lastActivityId: "late-one", updatedAt: serverTimestamp() });
+    }));
+
+    await assertFails(runTransaction(studentDb, async transaction => {
+      const [activity, completion, ledger, state] = await Promise.all([
+        transaction.get(doc(studentDb, "activities", "late-no-penalty")),
+        transaction.get(doc(studentDb, "users", studentUid, "activityCompletions", "late-no-penalty")),
+        transaction.get(doc(studentDb, "users", studentUid, "rankedActivities", "late-no-penalty")),
+        transaction.get(stateRef),
+      ]);
+      if (!activity.exists() || completion.exists() || ledger.exists() || !state.exists()) throw new Error("Atividade sem multa inesperada.");
+      transaction.set(doc(studentDb, "users", studentUid, "activityCompletions", "late-no-penalty"), { activityId: "late-no-penalty", completedAt: serverTimestamp() });
+      transaction.set(doc(studentDb, "users", studentUid, "rankedActivities", "late-no-penalty"), { activityId: "late-no-penalty", points: 12, awardedAt: serverTimestamp(), active: true, reversedAt: null });
+      transaction.set(stateRef, { totalRP: state.data().totalRP + 12, lastActivityId: "late-no-penalty", updatedAt: serverTimestamp() });
+    }));
+
+    await assertFails(runTransaction(studentDb, async transaction => {
+      const completion = doc(studentDb, "users", studentUid, "activityCompletions", "closed-upcoming");
+      const ledger = doc(studentDb, "users", studentUid, "rankedActivities", "closed-upcoming");
+      const [activity, existingCompletion, existingLedger, state] = await Promise.all([
+        transaction.get(doc(studentDb, "activities", "closed-upcoming")), transaction.get(completion),
+        transaction.get(ledger), transaction.get(stateRef),
+      ]);
+      if (!activity.exists() || existingCompletion.exists() || existingLedger.exists() || !state.exists()) throw new Error("Atividade encerrada inesperada antes da conclusão bloqueada.");
+      transaction.set(completion, { activityId: "closed-upcoming", completedAt: serverTimestamp() });
+      transaction.set(ledger, { activityId: "closed-upcoming", points: 12, awardedAt: serverTimestamp(), active: true, reversedAt: null });
+      transaction.set(stateRef, { totalRP: state.data().totalRP + 12, lastActivityId: "closed-upcoming", updatedAt: serverTimestamp() });
+    }));
+
+    console.log("Firestore Rules: isolamento, agenda, ranking, opt-in, arquivo lógico, histórico, preferências, foco, multa única/piso zero e exceções de prazo/status passaram.");
   } finally {
     await environment.cleanup();
   }
